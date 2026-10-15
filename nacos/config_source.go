@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/oekit/registry/config"
+	"github.com/oekit/core/config"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"

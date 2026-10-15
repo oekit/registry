@@ -6,7 +6,7 @@
 // 各框架适配层只保留实例类型转换（registry/kitex、registry/hertz 的 convert.go）
 // 与框架 Result 组装的薄壳。
 //
-// 本包只允许 import 标准库与 ekit/registry（见 ekit 单体仓 ekit 单体仓 docs/PLATFORM_CONTRACT.md），
+// 本包只允许 import 标准库与 ekit/registry（oekit 平台契约 github.com/oekit/oekit.github.io/blob/main/docs/PLATFORM_CONTRACT.md），
 // 禁止依赖 Hertz/Kitex 等具体框架。
 //
 // # 用法（框架适配层侧）

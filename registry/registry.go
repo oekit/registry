@@ -187,4 +187,4 @@ func EncodeTargetTags(host string, tags map[string]string) string {
 
 // 说明：Kitex/Hertz 的实例类型转换函数（原 InstancesToKitex/InstancesToHertz）
 // 已迁至各自的框架适配包 registry/kitex 与 registry/hertz——
-// 本包是 provider 无关的 SPI，不得 import 任何具体框架（见 ekit 单体仓 ekit 单体仓 docs/PLATFORM_CONTRACT.md）。
+// 本包是 provider 无关的 SPI，不得 import 任何具体框架（oekit 平台契约 github.com/oekit/oekit.github.io/blob/main/docs/PLATFORM_CONTRACT.md）。

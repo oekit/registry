@@ -14,15 +14,42 @@
 go get github.com/oekit/registry@v0.2.5
 ```
 
-## 快速使用
+## 能做什么
 
+- **SPI 四接口**：Registrar / Discoverer / Subscriber / ConfigStore，provider 无关
+- **Nacos 实现**：注册/发现/订阅/配置监听全家
+- **nacos 门面**：`NewNamingClient`/`NewConfigClient` 快捷构造
+- **config**：YAML 加载（`LoadBootstrap[T]`）、环境变量、.env、merge
+- **registrymocks**：SPI 的现成测试 mock
+- **sdbridge**：各框架 Resolver 适配的共享核心
+
+## 使用示例
+
+### 服务注册 + 发现
 ```go
-import nacosimpl "github.com/oekit/registry/registry/nacos"
+import (
+    nacosimpl "github.com/oekit/registry/registry/nacos"
+    "github.com/oekit/registry/registry"
+)
 
-reg, _ := nacosimpl.NewRegistrar(namingCli)    // 服务注册
-disc, _ := nacosimpl.NewDiscoverer(namingCli)  // 服务发现
+reg, _ := nacosimpl.NewRegistrar(namingCli)
+_ = reg.Register(ctx, registry.Instance{IP: ip, Port: 8080, Weight: 10})
+
+disc, _ := nacosimpl.NewDiscoverer(namingCli)
+insts, _ := disc.Discover(ctx, "dep-service")
 ```
+### 配置加载
+```go
+import "github.com/oekit/registry/config"
 
+config.LoadDotEnv(".env")
+cfg, _ := config.LoadBootstrap[AppConfig]("dev") // 自动选 etc/config-dev.yaml
+```
+### 订阅实例变化
+```go
+_ = sub.Subscribe(ctx, "dep-service", func(instances []registry.Instance) {
+    // 实例列表变化回调
+})
 ## 包清单
 
 - \`registry/\` — Registrar/Discoverer/Subscriber/ConfigStore 核心接口 + 实例模型 + netutil

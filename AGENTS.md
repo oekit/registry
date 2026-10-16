@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/registry
 
 > 注册发现 SPI（Registrar/Discoverer/Subscriber/ConfigStore）+ Nacos 实现 + nacos 门面 + config 配置加载 + sdbridge + registrymocks
-> 当前版本：`v0.3.0` · module：`github.com/oekit/registry` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`ekit-registry` · module：`github.com/oekit/registry` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `config/`、`nacos/`、`registry/`、`registry/nacos/`、`registry/sdbridge/`、`registrymocks/`

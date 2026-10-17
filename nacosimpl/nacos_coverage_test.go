@@ -9,7 +9,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // stubNamingClient is a minimal mock of [naming_client.INamingClient].

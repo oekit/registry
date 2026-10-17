@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // FetchErrFunc 包装实例拉取阶段的错误。

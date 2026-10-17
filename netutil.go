@@ -13,7 +13,7 @@ import (
 // 通配监听时，listener.Addr() 与 WithServiceAddr 会产生这些形式）时，
 // 自动使用 network.GetPodIP() 获取本机 IP（支持 K8s POD_IP），保证注册出去
 // 的实例地址对其他节点可拨号。
-// 这是 ekit 中解析注册地址的唯一实现，registry/kitex、registry/hertz、nns/kitex
+// 这是 ekit 中解析注册地址的唯一实现，kitex/registry、hertz/registry、kitex/nns
 // 应委托至此，避免逻辑重复。
 func ParseAddr(addr net.Addr) (string, int, error) {
 	if addr == nil {

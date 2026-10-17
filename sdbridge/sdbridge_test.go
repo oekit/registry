@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 func TestServiceNameFromDesc(t *testing.T) {
@@ -85,7 +85,7 @@ func TestResolverCore_Fetch(t *testing.T) {
 		if !errors.Is(err, boom) {
 			t.Fatalf("Fetch() error = %v, want wrap %v", err, boom)
 		}
-		// 与 registry/kitex、registry/hertz 历史文案逐字一致
+		// 与 kitex/registry、hertz/registry 历史文案逐字一致
 		if want := `kitex resolver: discover "echo": nacos down`; err.Error() != want {
 			t.Errorf("Fetch() error = %q, want %q", err.Error(), want)
 		}
@@ -99,7 +99,7 @@ func TestResolverCore_Fetch(t *testing.T) {
 		if !errors.Is(err, boom) {
 			t.Fatalf("Fetch() error = %v, want wrap %v", err, boom)
 		}
-		// 与 nns/kitex、nns/hertz 历史文案逐字一致
+		// 与 kitex/nns、hertz/nns 历史文案逐字一致
 		if want := `kitex resolver: nacos down`; err.Error() != want {
 			t.Errorf("Fetch() error = %q, want %q", err.Error(), want)
 		}

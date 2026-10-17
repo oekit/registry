@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 func TestRegistrar_BasicFlow(t *testing.T) {

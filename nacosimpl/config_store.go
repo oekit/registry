@@ -5,7 +5,7 @@ import (
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // ConfigStore 实现 [registry.ConfigStore] 接口，基于 Nacos config client。

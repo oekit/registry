@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // FetchFunc 拉取指定服务的实例列表。
@@ -18,7 +18,7 @@ type FetchFunc func(ctx context.Context, service string) ([]registry.Instance, e
 // ServiceNameFromDesc 去掉 Hertz 服务描述中的 "?tags" 后缀，返回纯服务名。
 //
 // Hertz 的缓存 key（由 registry.EncodeTargetTags 编码）形如 "host?k=v"，
-// 而服务发现只认服务名，解析逻辑原先在 registry/hertz 与 nns/hertz 各拷贝一份。
+// 而服务发现只认服务名，解析逻辑原先在 hertz/registry 与 hertz/nns 各拷贝一份。
 func ServiceNameFromDesc(desc string) string {
 	if idx := strings.Index(desc, "?"); idx >= 0 {
 		return desc[:idx]

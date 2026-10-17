@@ -5,7 +5,7 @@ import (
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // Discoverer 实现 [registry.Discoverer] 接口，基于 Nacos naming client。

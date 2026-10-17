@@ -6,7 +6,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // Subscriber 实现 [registry.Subscriber] 接口，基于 Nacos naming client。

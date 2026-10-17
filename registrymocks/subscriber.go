@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // Subscriber 是 [registry.Subscriber] 的可配置 mock 实现。

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // Discoverer 是 [registry.Discoverer] 的可配置 mock 实现。

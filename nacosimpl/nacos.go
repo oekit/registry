@@ -6,7 +6,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/oekit/core/network"
 	"github.com/oekit/logx"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 var log = logx.Delegating("registry/nacos")

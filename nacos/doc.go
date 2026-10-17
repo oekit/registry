@@ -39,7 +39,7 @@
 //
 // 使用 registry/nacos 包的 Registrar（推荐）或 nns 包的 Bootstrap：
 //
-//	import nacosimpl "github.com/oekit/registry/registry/nacos"
+//	import nacosimpl "github.com/oekit/registry/nacosimpl"
 //
 //	reg := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(cfg.Group))
 //	err := reg.Register(ctx, registry.Instance{

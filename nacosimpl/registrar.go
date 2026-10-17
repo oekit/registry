@@ -6,7 +6,7 @@ import (
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // errRegisterReturnedFalse 表示 Nacos SDK 注册返回 false（非 error）。

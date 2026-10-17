@@ -36,12 +36,6 @@ func (i Instance) Addr() string {
 	return net.JoinHostPort(i.IP, strconv.Itoa(i.Port))
 }
 
-// GetWeight 返回实例权重，满足 network/loadbalance.Instance 接口，
-// 可直接参与加权负载均衡选择。
-func (i Instance) GetWeight() float64 {
-	return i.Weight
-}
-
 // Registrar 提供服务实例的注册和注销能力。
 type Registrar interface {
 	// Register 将服务实例注册到注册中心。
@@ -186,5 +180,5 @@ func EncodeTargetTags(host string, tags map[string]string) string {
 }
 
 // 说明：Kitex/Hertz 的实例类型转换函数（原 InstancesToKitex/InstancesToHertz）
-// 已迁至各自的框架适配包 registry/kitex 与 registry/hertz——
+// 已迁至 kitex 仓的 kitex/registry 与 hertz 仓的 hertz/registry 包——
 // 本包是 provider 无关的 SPI，不得 import 任何具体框架（oekit 平台契约 github.com/oekit/oekit.github.io/blob/main/docs/PLATFORM_CONTRACT.md）。

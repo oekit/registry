@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // Registrar 是 [registry.Registrar] 的可配置 mock 实现。

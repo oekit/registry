@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/registry@v0.3.1
+go get github.com/oekit/registry@v0.4.0
 ```
 
 ## 这个仓库做什么
@@ -21,16 +21,16 @@ SPI、Nacos 落地实现、Nacos 客户端门面、Nacos 配置源适配，以�
 
 | 包 | 做什么 |
 |---|---|
-| `registry` | SPI：`Registrar`/`Discoverer`/`Subscriber`/`ConfigStore` + 实例模型 + 注册地址解析（netutil）。hertz/kitex 适配器面向它编程 |
-| `registry/nacos` | Nacos 实现（nacos-sdk-go v2） |
-| `registry/sdbridge` | 服务发现适配器共享核心（拉取+校验+错误包装），oekit/hertz 与 oekit/kitex 复用 |
+| `registry`（模块根） | SPI：`Registrar`/`Discoverer`/`Subscriber`/`ConfigStore` + 实例模型 + 注册地址解析（netutil）。hertz/kitex 适配器面向它编程。v0.4.0 起自 `registry/registry` 子目录提升至模块根 |
+| `nacosimpl` | Nacos SPI 实现（nacos-sdk-go v2；原 `registry/registry/nacos`） |
+| `sdbridge` | 服务发现适配器共享核心（拉取+校验+错误包装），oekit/hertz 与 oekit/kitex 复用 |
 | `registrymocks` | 四接口的统一测试 mock |
 | `nacos` | Nacos 客户端门面（nns 默认构造用） |
 
 ## 快速使用
 
 ```go
-import nacosimpl "github.com/oekit/registry/registry/nacos"
+import nacosimpl "github.com/oekit/registry/nacosimpl"
 
 reg, _ := nacosimpl.NewRegistrar(namingCli)    // 服务注册
 disc, _ := nacosimpl.NewDiscoverer(namingCli)  // 服务发现

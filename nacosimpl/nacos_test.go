@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 func TestToInstance(t *testing.T) {

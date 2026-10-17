@@ -2,6 +2,10 @@
 
 由 ekit v0.34.0（git.enjoye.top/enjoydream/ekit，冻结维护）拆分而来。所有 notable 变更记录如下。
 
+## [v0.3.1] — 2026-10-17
+
+- fix(deps): 内部依赖地板 core v0.4.0 → v0.6.0、logx v0.1.9 → v0.5.0；go 最低版本降至 1.24.0——x/net v0.50.0、grpc v1.80.0、genproto/rpc 20260120 锁 go1.24 兼容版
+
 ## [v0.3.0] — 2026-10-16
 
 ### Breaking

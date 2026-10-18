@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/registry
 
 > 注册发现核心 + Nacos 实现 + Nacos 配置源 + sdbridge
-> 当前版本：`v0.3.1` · module：`github.com/oekit/registry` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.4.1` · module：`github.com/oekit/registry` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `nacos/`、`registry/`、`registry/nacos/`、`registry/sdbridge/`、`registrymocks/`

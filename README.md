@@ -5,27 +5,39 @@
 > 🌐 项目主页：**https://oekit.github.io/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
 > 🤖 AI Agent：本仓规范与硬规则见 [AGENTS.md](AGENTS.md)；机器可读索引见 [llms.txt](https://oekit.github.io/llms.txt)（接口签名以源码为准）。
 
-## 安装
-
-```bash
-go get github.com/oekit/registry@v0.4.2
-```
-
 ## 这个仓库做什么
 
 `registry` 是**注册发现与配置的基础设施层**：provider 无关的服务注册/发现/订阅/配置
-SPI、Nacos 落地实现、Nacos 客户端门面、Nacos 配置源适配，以及跨框架的服务发现桥接。
+SPI、跨框架的服务发现桥接，以及（**独立发版的嵌套模块**）Nacos 落地实现与 Nacos 客户端门面。
 本地配置文件加载（YAML/env/.env）已迁至 [core/config](https://github.com/oekit/core)。
+
+## 安装
+
+```bash
+# 只想要 SPI 接口（根模块**零第三方依赖**）
+go get github.com/oekit/registry@v0.4.2
+
+# 要用 Nacos 实现 / Nacos 客户端门面（各自独立发版，按需取）
+go get github.com/oekit/registry/nacosimpl@v0.1.0
+go get github.com/oekit/registry/nacos@v0.1.0
+```
+
+> **为什么 Nacos 实现是嵌套模块**：实测 `nacos-sdk-go/v2` 单独引入即拖进 **63 个第三方模块**
+> （阿里云 SDK 全家桶 + grpc + prometheus + otel…）。不隔离的话，**只想要注册发现接口**
+> 的消费方也会被连带拖进去——与「按需取用」的承诺冲突。
+> 嵌套模块的职责是**依赖隔离**（方向是父←子：只 import `registry` 的消费者不会拉进
+> Nacos 的重依赖），不是目录组织。**import 路径一个都没变**，
+> 变的只是「它由哪个 module 提供」——消费方补一条 `go get` 即可。
 
 ## 组成
 
-| 包 | 做什么 |
-|---|---|
-| `registry`（模块根） | SPI：`Registrar`/`Discoverer`/`Subscriber`/`ConfigStore` + 实例模型 + 注册地址解析（netutil）。hertz/kitex 适配器面向它编程。v0.4.0 起自 `registry/registry` 子目录提升至模块根 |
-| `nacosimpl` | Nacos SPI 实现（nacos-sdk-go v2；原 `registry/registry/nacos`） |
-| `sdbridge` | 服务发现适配器共享核心（拉取+校验+错误包装），oekit/hertz 与 oekit/kitex 复用 |
-| `registrymocks` | 四接口的统一测试 mock |
-| `nacos` | Nacos 客户端门面（nns 默认构造用） |
+| 包 | 做什么 | 所属 module |
+|---|---|---|
+| `registry`（模块根） | SPI：`Registrar`/`Discoverer`/`Subscriber`/`ConfigStore` + 实例模型 + 注册地址解析（netutil）。hertz/kitex 适配器面向它编程。v0.4.0 起自 `registry/registry` 子目录提升至模块根。**零第三方依赖** | `github.com/oekit/registry` |
+| `nacosimpl` | Nacos SPI 实现（nacos-sdk-go v2；原 `registry/registry/nacos`） | `github.com/oekit/registry/nacosimpl`（嵌套模块） |
+| `sdbridge` | 服务发现适配器共享核心（拉取+校验+错误包装），oekit/hertz 与 oekit/kitex 复用 | `github.com/oekit/registry` |
+| `registrymocks` | 四接口的统一测试 mock | `github.com/oekit/registry` |
+| `nacos` | Nacos 客户端门面（nns 默认构造用） | `github.com/oekit/registry/nacos`（嵌套模块） |
 
 ## 快速使用
 

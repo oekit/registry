@@ -4,7 +4,14 @@
 > 当前版本：`v0.4.2` · module：`github.com/oekit/registry` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
-`./`、`nacos/`、`nacosimpl/`、`registrymocks/`、`sdbridge/`
+- **根模块** `./`（SPI + `registrymocks/` + `sdbridge/`）：**零第三方依赖**
+- **嵌套模块** `nacos/` → `github.com/oekit/registry/nacos`：Nacos 客户端门面
+- **嵌套模块** `nacosimpl/` → `github.com/oekit/registry/nacosimpl`：Nacos SPI 实现（nacos-sdk 隔离在此）
+
+嵌套模块各自独立发版、独立 go.mod。**父仓不得重新引入 nacos-sdk**——
+那会让「只要 SPI 接口」的消费方被拖进 63 个第三方模块（实测：nacos-sdk-go/v2
+单独引入即拖 63 个；隔离方向是父←子，父仓保持零第三方）。
+新增注册中心实现时照此办理：**实现放嵌套模块，接口留父仓**。
 
 ## 硬规则速览（全矩阵适用）
 

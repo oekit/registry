@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/registry
 
 > 注册发现核心（provider 无关 SPI：Registrar/Discoverer/Subscriber/ConfigStore + 实例模型 + netutil）+ sdbridge + registrymocks——**根仓零第三方依赖**；Nacos 实现与 Nacos 配置源已拆成嵌套模块（v0.5.0 起：registry/nacosimpl、registry/nacos——nacos-sdk-go 重依赖隔离在此，实测单独引入即拖 63 个第三方模块，不隔离时只要 SPI 接口的消费方也会被连带拖入）
-> 当前版本：`v0.4.2` · module：`github.com/oekit/registry` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.5.0` · module：`github.com/oekit/registry` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 - **根模块** `./`（SPI + `registrymocks/` + `sdbridge/`）：**零第三方依赖**

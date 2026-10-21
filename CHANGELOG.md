@@ -1,3 +1,15 @@
+## [nacosimpl/v0.1.0] — 2026-10-21
+
+- Nacos 实现拆成嵌套模块 registry/nacosimpl 与 registry/nacos——根仓回归零第三方依赖（实测 nacos-sdk-go/v2 单独引入即拖 63 个第三方模块，不隔离时只要 SPI 接口的消费方也被连带拖入）；import 路径不变，消费方需在 go.mod 里补 go get github.com/oekit/registry/nacosimpl
+
+## [nacos/v0.1.0] — 2026-10-21
+
+- Nacos 实现拆成嵌套模块 registry/nacosimpl 与 registry/nacos——根仓回归零第三方依赖（实测 nacos-sdk-go/v2 单独引入即拖 63 个第三方模块，不隔离时只要 SPI 接口的消费方也被连带拖入）；import 路径不变，消费方需在 go.mod 里补 go get github.com/oekit/registry/nacosimpl
+
+## [v0.5.0] — 2026-10-21
+
+- Nacos 实现拆成嵌套模块 registry/nacosimpl 与 registry/nacos——根仓回归零第三方依赖（实测 nacos-sdk-go/v2 单独引入即拖 63 个第三方模块，不隔离时只要 SPI 接口的消费方也被连带拖入）；import 路径不变，消费方需在 go.mod 里补 go get github.com/oekit/registry/nacosimpl
+
 ## [v0.4.2] — 2026-10-19
 
 - build: 矩阵内依赖地板对齐（align_floors 不动点）：core v0.7.0 → v0.9.2、logx v0.6.0 → v0.7.0

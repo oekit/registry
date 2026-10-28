@@ -3,6 +3,10 @@
 由 oekit/registry v0.5.0 拆分而来（Nacos SPI 实现独立成模块——nacos-sdk 重依赖
 隔离在此，registry 根仓回归零第三方依赖）。
 
+## [v0.1.1] — 2026-10-28
+
+- build: 父模块依赖地板 v0.5.0 → v0.5.1（跟随 registry v0.5.1 发版）
+
 ## [v0.1.0] — 2026-10-21
 
 - refactor: 自 registry v0.5.0 拆出为独立模块——**import 路径不变**

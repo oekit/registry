@@ -1,3 +1,7 @@
+## [nacosimpl/v0.1.1] — 2026-10-28
+
+- build: 父模块依赖地板 v0.5.0 → v0.5.1（跟随 registry v0.5.1 发版）
+
 ## [v0.5.1] — 2026-10-28
 
 - fix(registry): 包文档的示例**编译不过**——① `nacosimpl.WithGroup(...)` 该符号不存在（真实的是 `WithRegistrarGroup`/`WithDiscovererGroup`/`WithSubscriberGroup` 三个各自独立的选项）；② `NewConfigStore`/`NewRegistrar` 等返回 `(*T, error)`，示例漏了 error；③ 本包**目录名是 `nacosimpl`、包名却是 `nacos`**（与 `registry/nacos` 同名 ⇒ 同时 import 会 `nacos redeclared`），示例既没展示别名 import 又直接用 `nacosimpl.` 前缀。示例按真实签名改正，并补一条用例把文档承诺的调用形态逐一编译一遍 ⇒ 文档再漂移时当场红

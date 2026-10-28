@@ -27,7 +27,9 @@
 //
 // 使用 Nacos 实现：
 //
-//	reg, err := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithGroup("DEFAULT_GROUP"))
+//	import nacosimpl "github.com/oekit/registry/nacosimpl"
+//
+//	reg, err := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup("DEFAULT_GROUP"))
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
@@ -40,6 +42,9 @@
 //
 // 发现服务实例：
 //
-//	disc, err := nacosimpl.NewDiscoverer(namingClient)
+//	disc, err := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup("DEFAULT_GROUP"))
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //	instances, err := disc.Discover(ctx, "user-service")
 package registry

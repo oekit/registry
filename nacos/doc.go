@@ -41,8 +41,11 @@
 //
 //	import nacosimpl "github.com/oekit/registry/nacosimpl"
 //
-//	reg := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(cfg.Group))
-//	err := reg.Register(ctx, registry.Instance{
+//	reg, err := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(cfg.Group))
+//	if err != nil {
+//	    return err
+//	}
+//	err = reg.Register(ctx, registry.Instance{
 //	    Service:  cfg.ServiceName,
 //	    IP:       nacosimpl.GetPodIP(),
 //	    Port:     port,

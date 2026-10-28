@@ -1,3 +1,7 @@
+## [v0.5.1] — 2026-10-28
+
+- fix(registry): 包文档的示例**编译不过**——① `nacosimpl.WithGroup(...)` 该符号不存在（真实的是 `WithRegistrarGroup`/`WithDiscovererGroup`/`WithSubscriberGroup` 三个各自独立的选项）；② `NewConfigStore`/`NewRegistrar` 等返回 `(*T, error)`，示例漏了 error；③ 本包**目录名是 `nacosimpl`、包名却是 `nacos`**（与 `registry/nacos` 同名 ⇒ 同时 import 会 `nacos redeclared`），示例既没展示别名 import 又直接用 `nacosimpl.` 前缀。示例按真实签名改正，并补一条用例把文档承诺的调用形态逐一编译一遍 ⇒ 文档再漂移时当场红
+
 ## [nacosimpl/v0.1.0] — 2026-10-21
 
 - Nacos 实现拆成嵌套模块 registry/nacosimpl 与 registry/nacos——根仓回归零第三方依赖（实测 nacos-sdk-go/v2 单独引入即拖 63 个第三方模块，不隔离时只要 SPI 接口的消费方也被连带拖入）；import 路径不变，消费方需在 go.mod 里补 go get github.com/oekit/registry/nacosimpl

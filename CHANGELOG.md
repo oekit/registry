@@ -1,3 +1,15 @@
+## [nacosimpl/v0.1.4] — 2026-11-03
+
+- build: 把父仓 registry v0.5.3 与 logx v0.8.2 的地板带进已发布产物（nacos/nacosimpl 原快照嵌的是更旧的父仓地板，消费方拿不到最新内容）（registry#49）
+
+关联问题单：registry#49。
+
+## [nacos/v0.1.3] — 2026-11-03
+
+- build: 把父仓 registry v0.5.3 与 logx v0.8.2 的地板带进已发布产物（nacos/nacosimpl 原快照嵌的是更旧的父仓地板，消费方拿不到最新内容）（registry#49）
+
+关联问题单：registry#49。
+
 ## [nacosimpl/v0.1.3] — 2026-11-03
 
 - build: 矩阵内依赖地板对齐——把父仓 registry v0.5.2 与 logx v0.8.1 的地板带进已发布产物（nacosimpl 原快照嵌的是 registry v0.5.1 + logx v0.8.0，消费方拿不到新地板内容）

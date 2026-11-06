@@ -3,6 +3,7 @@ package nacos
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/oekit/core/config"
 
@@ -19,6 +20,19 @@ import (
 type ConfigSource struct {
 	client config_client.IConfigClient
 	cfg    Bootstrap
+	// listenErr 记录最近一次 ListenConfig 注册失败（#53 可查询状态面）：
+	// nil = 监听已挂上。经 Err() 出口读取。
+	listenErr atomic.Pointer[error]
+}
+
+// Err 返回 ListenConfig 的注册失败（nil = 监听已挂上）。
+// Watch 本身实现 core/config.ConfigSource（void 签名），失败无法经返回值
+// 上抛——需要 fail-fast 的调用方在 Watch 之后读本方法。
+func (s *ConfigSource) Err() error {
+	if p := s.listenErr.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 var _ config.ConfigSource = (*ConfigSource)(nil)
@@ -32,7 +46,7 @@ func NewConfigSource(client config_client.IConfigClient, cfg Bootstrap) *ConfigS
 func (s *ConfigSource) Read() ([]byte, error) {
 	content, err := s.client.GetConfig(vo.ConfigParam{
 		DataId: s.cfg.DataId,
-		Group:  s.cfg.Group,
+		Group:  s.cfg.GroupOrDefault(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get nacos config [%s/%s]: %w", s.cfg.Group, s.cfg.DataId, err)
@@ -42,10 +56,15 @@ func (s *ConfigSource) Read() ([]byte, error) {
 
 // Watch 监听配置变更，变更时调用 onChange（异步，立即返回）。
 // Nacos SDK 无监听反注册 API，ctx 取消后 onChange 不再向调用方投递。
+//
+// ⚠️ 本方法实现 core/config.ConfigSource 接口（void 签名不可改）：注册失败
+// 经 **Err()** 可查询（#53）——ListenConfig 失败仅靠一条 ERROR 日志不可见，
+// 「配置中心改了下不去」的故障排查时不会先想到看启动日志。失败即需要
+// fail-fast 的调用方应在 Watch 后检查 Err()。
 func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 	err := s.client.ListenConfig(vo.ConfigParam{
 		DataId: s.cfg.DataId,
-		Group:  s.cfg.Group,
+		Group:  s.cfg.GroupOrDefault(),
 		OnChange: func(namespace, group, dataId, data string) {
 			select {
 			case <-ctx.Done():
@@ -58,5 +77,7 @@ func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 	})
 	if err != nil {
 		log.Error("listen config failed", "dataId", s.cfg.DataId, "err", err)
+		s.listenErr.Store(&err)
+		return
 	}
 }

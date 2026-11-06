@@ -19,7 +19,7 @@ var log = logx.Delegating("nacos")
 func LoadAndMerge[T any](client config_client.IConfigClient, cfg Bootstrap, local *T) error {
 	content, err := client.GetConfig(vo.ConfigParam{
 		DataId: cfg.DataId,
-		Group:  cfg.Group,
+		Group:  cfg.GroupOrDefault(),
 	})
 	if err != nil {
 		return fmt.Errorf("get nacos config [%s/%s]: %w", cfg.Group, cfg.DataId, err)
@@ -50,10 +50,14 @@ func LoadAndMerge[T any](client config_client.IConfigClient, cfg Bootstrap, loca
 //     current（热更基于快照深拷贝，原地修改会与 SDK 回调 goroutine 竞争）；
 //   - T 必须可 JSON 往返（深拷贝依赖），否则本次热更被跳过并记 Error，
 //     绝不降级为原地合并调用方的活配置。
-func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T, onChange func(*T)) {
+//
+// 返回注册错误（#53）：此前 ListenConfig 失败仅 log.Error——监听根本没挂上，
+// 后续配置变更永不投递，调用方无从感知热更已失效（0.x 允许 breaking：调用方
+// 需处理返回值，失败即 fail-fast 或自行告警）。
+func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T, onChange func(*T)) error {
 	err := client.ListenConfig(vo.ConfigParam{
 		DataId: cfg.DataId,
-		Group:  cfg.Group,
+		Group:  cfg.GroupOrDefault(),
 		OnChange: func(namespace, group, dataId, data string) {
 			log.Info("config changed", "namespace", namespace, "group", group, "dataId", dataId)
 
@@ -79,7 +83,9 @@ func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T
 	})
 	if err != nil {
 		log.Error("listen config failed", "err", err)
+		return fmt.Errorf("nacos: listen config [%s/%s]: %w", cfg.GroupOrDefault(), cfg.DataId, err)
 	}
+	return nil
 }
 
 func preserveNacosBootstrap[T any](cfg *T, bootstrap Bootstrap) {

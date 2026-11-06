@@ -1,9 +1,9 @@
 package nacos
 
 import (
-	"sync/atomic"
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/oekit/core/config"
 

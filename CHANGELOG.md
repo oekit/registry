@@ -1,3 +1,15 @@
+## [nacos/v0.1.7] — 2026-11-06
+
+- fix(nacos): Group 空值统一回填 `DEFAULT_GROUP` + Listen/Watch 失败可感知（[#51](https://github.com/oekit/registry/issues/51)、[#53](https://github.com/oekit/registry/issues/53)）——文档与 yaml 注释宣称的 Group 默认值此前从未被应用：GetConfig 对空 Group SDK 侧兜底（读路径侥幸工作），`ListenConfig` 对空 Group 直接报错 "Group can not be empty" 且被门面吞掉——YAML 省略 group 时热更从未注册，改配置永远不触发 onChange。修法：`Bootstrap.GroupOrDefault()` 统一回填（与 nacosimpl 同口径，全部 SDK 调用点接线）；**BREAKING** `Listen[T]` 改为返回 error（0.x 允许 breaking）——监听未挂上时调用方必须能感知，失败即 fail-fast；`ConfigSource.Watch` 因实现 core/config 接口（void 签名）不改签名，失败经新增的 **`ConfigSource.Err()`** 可查询（nil=监听已挂上），需 fail-fast 的调用方 Watch 后检查
+
+关联问题单：registry#51、registry#53。
+
+## [nacosimpl/v0.1.7] — 2026-11-06
+
+- fix(nacosimpl): Subscribe 推送错误可感知面（[#54](https://github.com/oekit/registry/issues/54)）——SDK 推送失败此前只 log.Error 后 return：不更新状态、无重试，本地缓存（discover 侧视图）滞留旧版本直至下次推送，无任何可见信号。修法：新增 `Subscriber.LastErr()` 可查询（推送失败非 nil、成功推送清零），供健康检查/巡检暴露「视图可能过期」；日志点名明缓存可能滞后
+
+关联问题单：registry#54。
+
 ## [nacosimpl/v0.1.6] — 2026-11-06
 
 - build: 矩阵依赖地板对齐（维护轮 #233）

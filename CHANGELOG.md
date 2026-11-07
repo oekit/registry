@@ -1,3 +1,19 @@
+## [nacos/v0.1.8] — 2026-11-07
+
+- fix(registry): EncodeTargetTags 的 tag key/value 经 QueryEscape——分隔符只由编码器产生，缓存 key 碰撞面关闭（#63）
+- fix(registry): ParseAddr 对回环结果 fail-closed 拒绝注册（ErrLoopbackAddr 哨兵）——GetPodIP 静默回退 127.0.0.1 不再进入注册面（core 侧 GetPodIP 回退 ERROR 见 oekit#141/core v0.13.1）（#64）
+- fix(nacosimpl): Registrar/Discoverer 的 ctx 真正下探（invokeWithCtx 竞速）——关停期反注册超时预算生效，SDK panic 转 error（#65）
+
+关联问题单：registry#63、registry#64、registry#65。
+
+## [v0.5.5] — 2026-11-07
+
+- fix(registry): EncodeTargetTags 的 tag key/value 经 QueryEscape——分隔符只由编码器产生，缓存 key 碰撞面关闭（#63）
+- fix(registry): ParseAddr 对回环结果 fail-closed 拒绝注册（ErrLoopbackAddr 哨兵）——GetPodIP 静默回退 127.0.0.1 不再进入注册面（core 侧 GetPodIP 回退 ERROR 见 oekit#141/core v0.13.1）（#64）
+- fix(nacosimpl): Registrar/Discoverer 的 ctx 真正下探（invokeWithCtx 竞速）——关停期反注册超时预算生效，SDK panic 转 error（#65）
+
+关联问题单：registry#63、registry#64、registry#65。
+
 ## [nacos/v0.1.7] — 2026-11-06
 
 - fix(nacos): Group 空值统一回填 `DEFAULT_GROUP` + Listen/Watch 失败可感知（[#51](https://github.com/oekit/registry/issues/51)、[#53](https://github.com/oekit/registry/issues/53)）——文档与 yaml 注释宣称的 Group 默认值此前从未被应用：GetConfig 对空 Group SDK 侧兜底（读路径侥幸工作），`ListenConfig` 对空 Group 直接报错 "Group can not be empty" 且被门面吞掉——YAML 省略 group 时热更从未注册，改配置永远不触发 onChange。修法：`Bootstrap.GroupOrDefault()` 统一回填（与 nacosimpl 同口径，全部 SDK 调用点接线）；**BREAKING** `Listen[T]` 改为返回 error（0.x 允许 breaking）——监听未挂上时调用方必须能感知，失败即 fail-fast；`ConfigSource.Watch` 因实现 core/config 接口（void 签名）不改签名，失败经新增的 **`ConfigSource.Err()`** 可查询（nil=监听已挂上），需 fail-fast 的调用方 Watch 后检查

@@ -1,6 +1,7 @@
 package nacos
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
@@ -54,6 +55,12 @@ func toInstances(serviceName string, src []model.Instance) []registry.Instance {
 //
 //	ip := nacosimpl.GetPodIP()
 //	reg.Register(ctx, registry.Instance{Service: "my-svc", IP: ip, Port: 8080})
+//
+// 注意（#64）：失败回退 127.0.0.1 意味着实例会以回环地址注册——其他节点
+// 永远拨不通。注册路径应优先走 registry.ParseAddr / registry.InfoFrom
+// （对回环结果 fail-closed 返回 [registry.ErrLoopbackAddr]）；直接使用本函数
+// 的调用方需自行校验回退结果。回退前的 ERROR 日志在 core 仓
+// network.GetPodIP 本体处理（oekit#141 跟进）。
 func GetPodIP() string {
 	return network.GetPodIP()
 }
@@ -61,4 +68,49 @@ func GetPodIP() string {
 // wrapErr 包装错误并附带 Nacos 上下文信息。
 func wrapErr(op, service string, err error) error {
 	return fmt.Errorf("registry/nacos: %s [%s]: %w", op, service, err)
+}
+
+// invokeWithCtx 以 ctx 感知方式执行一次无 ctx 入参的 SDK 调用（#65）。
+//
+// nacos-sdk-go 的 API（RegisterInstance/SelectInstances 等）不接收
+// context.Context，底层 HTTP 请求与内部重试无法被外部中断——此前
+// Registrar/Discoverer 签名里的 ctx 被完全忽略，bootstrap 给关停期反注册
+// 的独立超时预算对它完全无效：Nacos 不可达时 SDK 内部阻塞多久，关停就拖多久。
+//
+// 本函数用 goroutine + select 竞速兜住这条 SDK 限制：
+//   - 进入前 ctx 已取消/超时 ⇒ 不发起 SDK 调用，直接返回 ctx.Err()；
+//   - SDK 调用进行中 ctx 取消/超时 ⇒ 立即返回 ctx.Err()（调用方的超时预算
+//     生效）；底层 SDK 调用无法中断，会在后台自行完成，结果被丢弃——
+//     这是 SDK 的限制，注册/反注册幂等性由 Nacos 侧保证；
+//   - SDK 调用 panic 被就地 recover 并转为 error 返回（不打死进程，
+//     也不让 select 悬挂）。
+//
+// channel 带缓冲（容量 1）：ctx 先返回时后台调用仍能完成发送，goroutine 不泄漏。
+func invokeWithCtx[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+
+	type result struct {
+		val T
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				ch <- result{zero, fmt.Errorf("nacos sdk call panicked: %v", r)}
+			}
+		}()
+		v, err := fn()
+		ch <- result{v, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.val, r.err
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	}
 }

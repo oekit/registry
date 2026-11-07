@@ -54,6 +54,12 @@ func toInstances(serviceName string, src []model.Instance) []registry.Instance {
 //
 //	ip := nacosimpl.GetPodIP()
 //	reg.Register(ctx, registry.Instance{Service: "my-svc", IP: ip, Port: 8080})
+//
+// 注意（#64）：失败回退 127.0.0.1 意味着实例会以回环地址注册——其他节点
+// 永远拨不通。注册路径应优先走 registry.ParseAddr / registry.InfoFrom
+// （对回环结果 fail-closed 返回 [registry.ErrLoopbackAddr]）；直接使用本函数
+// 的调用方需自行校验回退结果。回退前的 ERROR 日志在 core 仓
+// network.GetPodIP 本体处理（oekit#141 跟进）。
 func GetPodIP() string {
 	return network.GetPodIP()
 }

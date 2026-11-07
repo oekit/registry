@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -181,6 +182,9 @@ func TestEncodeTargetTags_Injective(t *testing.T) {
 
 func TestParseAddr_UnspecifiedHostResolvesLocalIP(t *testing.T) {
 	localIP := network.GetPodIP()
+	// #64 后：GetPodIP 只剩回环地址可用时（无 POD_IP 且无非回环网卡），
+	// 通配地址解析必须报错而非以回环地址注册——期望值跟随本机环境动态判定。
+	localIsLoopback := net.ParseIP(localIP) != nil && net.ParseIP(localIP).IsLoopback()
 
 	tests := []struct {
 		name    string
@@ -189,9 +193,9 @@ func TestParseAddr_UnspecifiedHostResolvesLocalIP(t *testing.T) {
 		wantErr bool
 	}{
 		// kitex/hertz 对 ":9090" 监听时 listener.Addr() 的两种真实形态
-		{"ipv4Wildcard", &net.TCPAddr{IP: net.IPv4zero, Port: 9090}, localIP, false},
-		{"ipv6Wildcard", &net.TCPAddr{IP: net.IPv6unspecified, Port: 9090}, localIP, false},
-		{"nilIPEmptyHost", &net.TCPAddr{Port: 9090}, localIP, false},
+		{"ipv4Wildcard", &net.TCPAddr{IP: net.IPv4zero, Port: 9090}, localIP, localIsLoopback},
+		{"ipv6Wildcard", &net.TCPAddr{IP: net.IPv6unspecified, Port: 9090}, localIP, localIsLoopback},
+		{"nilIPEmptyHost", &net.TCPAddr{Port: 9090}, localIP, localIsLoopback},
 		{"explicitIPKept", &net.TCPAddr{IP: net.IPv4(192, 168, 1, 5), Port: 8080}, "192.168.1.5", false},
 		{"nilAddr", nil, "", true},
 	}
@@ -217,5 +221,80 @@ func TestParseAddr_UnspecifiedHostResolvesLocalIP(t *testing.T) {
 				t.Errorf("port = %d, want 8080", port)
 			}
 		})
+	}
+}
+
+// TestParseAddr_RejectsLoopbackFallback 是 #64 的核心回归：
+// 通配监听 + GetPodIP 回退回环（这里用 POD_IP=127.0.0.1 精确控制 GetPodIP
+// 的返回值）时，必须返回 [ErrLoopbackAddr] 拒绝注册，而不是静默以
+// 127.0.0.1 注册——那会让其他节点永远拨不通该实例。
+func TestParseAddr_RejectsLoopbackFallback(t *testing.T) {
+	tests := []struct {
+		name   string
+		podIP  string
+		addr   net.Addr
+		errMsg string
+	}{
+		{"ipv4LoopbackViaPODIP", "127.0.0.1", &net.TCPAddr{Port: 9090}, "127.0.0.1"},
+		{"ipv6LoopbackViaPODIP", "::1", &net.TCPAddr{Port: 9090}, "::1"},
+		{"ipv4LoopbackAny127", "127.0.0.5", &net.TCPAddr{Port: 9090}, "127.0.0.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("POD_IP", tt.podIP)
+			ip, _, err := ParseAddr(tt.addr)
+			if err == nil {
+				t.Fatalf("ParseAddr with POD_IP=%s: got (%q, nil), want ErrLoopbackAddr", tt.podIP, ip)
+			}
+			if !errors.Is(err, ErrLoopbackAddr) {
+				t.Errorf("err = %v, want ErrLoopbackAddr", err)
+			}
+			if !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("err = %v, want it to mention %q", err, tt.errMsg)
+			}
+		})
+	}
+}
+
+// TestParseAddr_AcceptsNonLoopbackPODIP 对照组：POD_IP 是正常可拨号地址时
+// 通配解析照常通过。
+func TestParseAddr_AcceptsNonLoopbackPODIP(t *testing.T) {
+	t.Setenv("POD_IP", "10.1.2.3")
+	ip, port, err := ParseAddr(&net.TCPAddr{Port: 9090})
+	if err != nil {
+		t.Fatalf("ParseAddr: %v", err)
+	}
+	if ip != "10.1.2.3" || port != 9090 {
+		t.Errorf("ParseAddr = (%q, %d), want (10.1.2.3, 9090)", ip, port)
+	}
+}
+
+// TestParseAddr_RejectsExplicitLoopback 显式监听回环地址同样拒绝：
+// 该地址对其他节点同样不可拨号，大概率是本机调试误配。
+func TestParseAddr_RejectsExplicitLoopback(t *testing.T) {
+	tests := []struct {
+		name string
+		addr net.Addr
+	}{
+		{"ipv4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9090}},
+		{"ipv6", &net.TCPAddr{IP: net.ParseIP("::1"), Port: 9090}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := ParseAddr(tt.addr)
+			if !errors.Is(err, ErrLoopbackAddr) {
+				t.Errorf("ParseAddr(%v) err = %v, want ErrLoopbackAddr", tt.addr, err)
+			}
+		})
+	}
+}
+
+// TestInfoFrom_PropagatesLoopbackRejection 注册入口（InfoFrom）必须把
+// 回环拒绝透传给调用方——否则 fail-closed 防线在适配层被吞。
+func TestInfoFrom_PropagatesLoopbackRejection(t *testing.T) {
+	t.Setenv("POD_IP", "127.0.0.1")
+	_, err := InfoFrom("svc", &net.TCPAddr{Port: 9090}, 10, 10, nil)
+	if !errors.Is(err, ErrLoopbackAddr) {
+		t.Errorf("InfoFrom err = %v, want ErrLoopbackAddr", err)
 	}
 }

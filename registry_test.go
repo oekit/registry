@@ -1,7 +1,9 @@
 package registry
 
 import (
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/oekit/core/network"
@@ -80,6 +82,100 @@ func TestApply_NilOptionIsSafe(t *testing.T) {
 	opt := Apply(nil, WithWeight(20), nil)
 	if opt.Weight != 20 {
 		t.Errorf("Weight = %v, want 20", opt.Weight)
+	}
+}
+
+func TestEncodeTargetTags(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		tags map[string]string
+		want string
+	}{
+		{"empty tags returns host", "h", nil, "h"},
+		{"empty map returns host", "h", map[string]string{}, "h"},
+		{"single tag", "h", map[string]string{"a": "1"}, "h?a=1"},
+		{"keys sorted", "h", map[string]string{"b": "2", "a": "1"}, "h?a=1&b=2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EncodeTargetTags(tt.host, tt.tags); got != tt.want {
+				t.Errorf("EncodeTargetTags(%q, %v) = %q, want %q", tt.host, tt.tags, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeTargetTags_Deterministic(t *testing.T) {
+	tags := map[string]string{"a": "1", "b": "2", "c": "3"}
+	first := EncodeTargetTags("h", tags)
+	for i := 0; i < 10; i++ {
+		if got := EncodeTargetTags("h", tags); got != first {
+			t.Fatalf("EncodeTargetTags not deterministic: %q vs %q", got, first)
+		}
+	}
+}
+
+// TestEncodeTargetTags_EscapesSpecialChars 值里的分隔符必须被转义（#63）：
+// 编码后的 key 中「?」「&」「=」只允许由编码器自身产生。
+func TestEncodeTargetTags_EscapesSpecialChars(t *testing.T) {
+	got := EncodeTargetTags("h", map[string]string{"a": "b?c=d"})
+	if want := "h?a=b%3Fc%3Dd"; got != want {
+		t.Errorf("EncodeTargetTags = %q, want %q", got, want)
+	}
+	// key 含分隔符同样转义
+	got = EncodeTargetTags("h", map[string]string{"k&=?": "v"})
+	if want := "h?k%26%3D%3F=v"; got != want {
+		t.Errorf("EncodeTargetTags = %q, want %q", got, want)
+	}
+	// 转义后 tag 段不再出现裸分隔符：首个 ? 即服务名分隔符
+	// （sdbridge.ServiceNameFromDesc 按首个 ? 截取服务名）
+	got = EncodeTargetTags("svc", map[string]string{"a": "x?y&z=w"})
+	if n := strings.Count(got, "?"); n != 1 {
+		t.Errorf("encoded key %q contains %d '?', want 1", got, n)
+	}
+}
+
+// TestEncodeTargetTags_NoDelimiterCollision 是 #63 的原始碰撞回归：
+// 修复前 ("h", {"a": "b?c=d"}) 与 ("h?a=b", {"c": "d"}) 都编码成 "h?a=b?c=d"，
+// 两个不同目标共享缓存条目。
+func TestEncodeTargetTags_NoDelimiterCollision(t *testing.T) {
+	a := EncodeTargetTags("h", map[string]string{"a": "b?c=d"})
+	b := EncodeTargetTags("h?a=b", map[string]string{"c": "d"})
+	if a == b {
+		t.Fatalf("cache key collision: EncodeTargetTags(h,{a:b?c=d}) == EncodeTargetTags(h?a=b,{c:d}) == %q", a)
+	}
+}
+
+// TestEncodeTargetTags_Injective 对一组含分隔符的刁钻 (host, tags) 组合
+// 做两两互异检查：编码必须对输入单射，否则不同目标共享缓存条目。
+func TestEncodeTargetTags_Injective(t *testing.T) {
+	cases := []struct {
+		host string
+		tags map[string]string
+	}{
+		{"h", nil},
+		{"h", map[string]string{"a": "b"}},
+		{"h", map[string]string{"a": "b?c=d"}},
+		{"h", map[string]string{"a": "b?c", "d": ""}},
+		{"h", map[string]string{"a=b": "c"}},
+		{"h", map[string]string{"a": "b&c=d"}},
+		{"h", map[string]string{"a&b": "c"}},
+		{"h", map[string]string{"a": "b c"}}, // 空格 → QueryEscape 转成 +
+		{"h", map[string]string{"a": "b+c"}}, // 加号与空格不得互相混淆
+		{"h", map[string]string{"a": "%3F"}}, // 已转义形态的明文值
+		// 注：host 含 ? 的组合（如 ("h?a=b", {c:d}) vs ("h?a=b?c=d", nil)）
+		// 仍会同 key——那是 host 侧的既有二义（服务名不应含 ?，见 godoc），
+		// 不在本用例的单射断言范围内；tag 侧碰撞已被转义消除。
+	}
+	seen := make(map[string]string, len(cases))
+	for _, c := range cases {
+		key := EncodeTargetTags(c.host, c.tags)
+		if prev, dup := seen[key]; dup {
+			t.Errorf("collision: (%q, %v) and %s encode to same key %q", c.host, c.tags, prev, key)
+			continue
+		}
+		seen[key] = fmt.Sprintf("(%q, %v)", c.host, c.tags)
 	}
 }
 

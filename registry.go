@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -155,6 +156,16 @@ func InfoFrom(name string, addr net.Addr, weight, defaultWeight int, tags map[st
 // EncodeTargetTags 将 host 和 tags 编码为确定性的缓存 key。
 // tags 的 key 按字典序排序，确保相同 tags 产生相同结果（Go map 迭代顺序不确定）。
 // 当 tags 为空时直接返回 host。
+//
+// tag 的 key 与 value 均经 [url.QueryEscape] 转义（#63）：此前值原样拼接，
+// 值里含 ?/&/= 时两个不同的 (host, tags) 组合会编码出同一个 key——
+// 如 ("h", {"a": "b?c=d"}) 与 ("h?a=b", {"c": "d"}) 都得到 "h?a=b?c=d"——
+// 碰撞的两个目标共享缓存条目，服务发现路由错乱且无任何报错。
+// 转义后分隔符只由编码器产生，key 对 (host, tags) 单射。
+//
+// 注意 host 本身不转义：消费方（如 sdbridge.ServiceNameFromDesc）按
+// 「首个 ? 之前是服务名」的规则解码，host 含 ? 时该语义本就二义，
+// 服务名不应包含 ?、&、=。
 func EncodeTargetTags(host string, tags map[string]string) string {
 	if len(tags) == 0 {
 		return host
@@ -172,9 +183,9 @@ func EncodeTargetTags(host string, tags map[string]string) string {
 		if i > 0 {
 			sb.WriteString("&")
 		}
-		sb.WriteString(k)
+		sb.WriteString(url.QueryEscape(k))
 		sb.WriteString("=")
-		sb.WriteString(tags[k])
+		sb.WriteString(url.QueryEscape(tags[k]))
 	}
 	return sb.String()
 }

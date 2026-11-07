@@ -1,3 +1,11 @@
+## [nacosimpl/v0.1.8] — 2026-11-07
+
+- fix(registry): EncodeTargetTags 的 tag key/value 经 QueryEscape——分隔符只由编码器产生，缓存 key 碰撞面关闭（#63）
+- fix(registry): ParseAddr 对回环结果 fail-closed 拒绝注册（ErrLoopbackAddr 哨兵）——GetPodIP 静默回退 127.0.0.1 不再进入注册面（core 侧 GetPodIP 回退 ERROR 见 oekit#141/core v0.13.1）（#64）
+- fix(nacosimpl): Registrar/Discoverer 的 ctx 真正下探（invokeWithCtx 竞速）——关停期反注册超时预算生效，SDK panic 转 error（#65）
+
+关联问题单：registry#63、registry#64、registry#65。
+
 ## [nacos/v0.1.8] — 2026-11-07
 
 - fix(registry): EncodeTargetTags 的 tag key/value 经 QueryEscape——分隔符只由编码器产生，缓存 key 碰撞面关闭（#63）

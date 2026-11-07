@@ -1,3 +1,7 @@
+## [v0.5.6] — 2026-11-08
+
+- build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
+
 ## [nacosimpl/v0.1.9] — 2026-11-07
 
 - build: 父模块地板对齐（嵌套 go.mod 的父仓 require 跟随最新，audit 门禁项）

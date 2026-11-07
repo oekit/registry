@@ -66,6 +66,10 @@ func NewRegistrar(client naming_client.INamingClient, opts ...RegistrarOption) (
 //
 // 从 inst 读取 Service、IP、Port、Weight、Metadata。
 // inst.Group / inst.Cluster 非空时覆盖 Registrar 默认值。
+//
+// ctx 语义（#65）：SDK API 不接收 context，无法真正中断底层调用。这里以
+// 竞速方式兜底——ctx 已取消/超时时快速失败返回 ctx.Err()（不发起或不再等待
+// SDK 调用）；SDK 调用若已在进行会在后台自行完成（结果丢弃）。
 func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error {
 	weight := inst.Weight
 	if weight <= 0 {
@@ -81,17 +85,19 @@ func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error 
 		clusterName = inst.Cluster
 	}
 
-	ok, err := r.client.RegisterInstance(vo.RegisterInstanceParam{
-		Ip:          inst.IP,
-		Port:        uint64(inst.Port),
-		ServiceName: inst.Service,
-		GroupName:   groupName,
-		ClusterName: clusterName,
-		Weight:      weight,
-		Enable:      true,
-		Healthy:     true,
-		Ephemeral:   true,
-		Metadata:    inst.Metadata,
+	ok, err := invokeWithCtx(ctx, func() (bool, error) {
+		return r.client.RegisterInstance(vo.RegisterInstanceParam{
+			Ip:          inst.IP,
+			Port:        uint64(inst.Port),
+			ServiceName: inst.Service,
+			GroupName:   groupName,
+			ClusterName: clusterName,
+			Weight:      weight,
+			Enable:      true,
+			Healthy:     true,
+			Ephemeral:   true,
+			Metadata:    inst.Metadata,
+		})
 	})
 	if err != nil {
 		return wrapErr("register", inst.Service, err)
@@ -106,6 +112,11 @@ func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error 
 // Deregister 从 Nacos 注销服务实例。
 //
 // inst.Group / inst.Cluster 非空时覆盖 Registrar 默认值。
+//
+// ctx 语义（#65）：与 [Registrar.Register] 相同——关停期给本调用挂
+// context.WithTimeout 的超时预算会生效（ctx 到点立即返回 ctx.Err()），
+// 但底层 SDK 反注册无法被中断，会在后台自行完成。Nacos 临时实例
+// （Ephemeral=true）心跳停止后也会被服务端摘除，反注册是加速手段。
 func (r *Registrar) Deregister(ctx context.Context, inst registry.Instance) error {
 	groupName := r.group
 	if inst.Group != "" {
@@ -116,13 +127,15 @@ func (r *Registrar) Deregister(ctx context.Context, inst registry.Instance) erro
 		clusterName = inst.Cluster
 	}
 
-	ok, err := r.client.DeregisterInstance(vo.DeregisterInstanceParam{
-		Ip:          inst.IP,
-		Port:        uint64(inst.Port),
-		ServiceName: inst.Service,
-		GroupName:   groupName,
-		Cluster:     clusterName,
-		Ephemeral:   true,
+	ok, err := invokeWithCtx(ctx, func() (bool, error) {
+		return r.client.DeregisterInstance(vo.DeregisterInstanceParam{
+			Ip:          inst.IP,
+			Port:        uint64(inst.Port),
+			ServiceName: inst.Service,
+			GroupName:   groupName,
+			Cluster:     clusterName,
+			Ephemeral:   true,
+		})
 	})
 	if err != nil {
 		return wrapErr("deregister", inst.Service, err)

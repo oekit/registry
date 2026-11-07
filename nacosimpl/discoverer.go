@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
+	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/oekit/registry"
 )
@@ -54,6 +55,10 @@ func NewDiscoverer(client naming_client.INamingClient, opts ...DiscovererOption)
 // Discover 根据服务名称从 Nacos 拉取健康实例列表。
 //
 // Group 使用 Discoverer 的默认值，Clusters 使用 Discoverer 的默认值。
+//
+// ctx 语义（#65）：SDK API 不接收 context，无法真正中断底层调用。这里以
+// 竞速方式兜底——ctx 已取消/超时时快速失败返回 ctx.Err()；SDK 调用若已在
+// 进行会在后台自行完成（结果丢弃）。
 func (d *Discoverer) Discover(ctx context.Context, serviceName string) ([]registry.Instance, error) {
 	param := vo.SelectInstancesParam{
 		ServiceName: serviceName,
@@ -64,7 +69,9 @@ func (d *Discoverer) Discover(ctx context.Context, serviceName string) ([]regist
 		param.Clusters = d.clusters
 	}
 
-	instances, err := d.client.SelectInstances(param)
+	instances, err := invokeWithCtx(ctx, func() ([]model.Instance, error) {
+		return d.client.SelectInstances(param)
+	})
 	if err != nil {
 		return nil, wrapErr("discover", serviceName, err)
 	}
@@ -75,6 +82,8 @@ func (d *Discoverer) Discover(ctx context.Context, serviceName string) ([]regist
 // DiscoverAll 根据服务名称从 Nacos 拉取全部实例列表（包括不健康的实例）。
 //
 // Group 和 Clusters 使用 Discoverer 的默认值。
+//
+// ctx 语义（#65）：与 [Discoverer.Discover] 相同。
 func (d *Discoverer) DiscoverAll(ctx context.Context, serviceName string) ([]registry.Instance, error) {
 	param := vo.SelectAllInstancesParam{
 		ServiceName: serviceName,
@@ -84,7 +93,9 @@ func (d *Discoverer) DiscoverAll(ctx context.Context, serviceName string) ([]reg
 		param.Clusters = d.clusters
 	}
 
-	instances, err := d.client.SelectAllInstances(param)
+	instances, err := invokeWithCtx(ctx, func() ([]model.Instance, error) {
+		return d.client.SelectAllInstances(param)
+	})
 	if err != nil {
 		return nil, wrapErr("discover all", serviceName, err)
 	}

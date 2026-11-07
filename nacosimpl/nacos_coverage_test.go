@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
@@ -522,6 +523,237 @@ func TestConfigStore_StopListenConfig(t *testing.T) {
 // contains is a small strings.Contains shim.
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || (len(s) > 0 && len(sub) > 0 && indexOfSub(s, sub) >= 0))
+}
+
+// --- ctx 感知测试（#65）---
+//
+// SDK API 不接收 context，invokeWithCtx 以 goroutine+select 竞速兜底：
+// ctx 已取消 → 快速失败且不触碰 SDK；SDK 阻塞中 ctx 取消 → 立即返回
+// context.Canceled（关停期反注册的超时预算生效）。同步一律用 channel，
+// 不 sleep。
+
+// TestRegistrar_Register_PreCanceledCtx 预取消的 ctx 必须快速失败，
+// 且不发起 SDK 调用（此前 ctx 被完全忽略，注册照常进行）。
+func TestRegistrar_Register_PreCanceledCtx(t *testing.T) {
+	called := make(chan vo.RegisterInstanceParam, 1)
+	stub := &stubNamingClient{
+		regInstanceFunc: func(p vo.RegisterInstanceParam) (bool, error) {
+			called <- p
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := r.Register(ctx, registry.Instance{Service: "s", IP: "1.1.1.1", Port: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Register with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case p := <-called:
+		t.Fatalf("SDK RegisterInstance must not be called, got call for %q", p.ServiceName)
+	default:
+	}
+}
+
+// TestRegistrar_Deregister_PreCanceledCtx 同上，覆盖 Deregister——
+// 关停期 ctx 可能已先一步取消，此时必须立即返回而不是再撞一次 SDK。
+func TestRegistrar_Deregister_PreCanceledCtx(t *testing.T) {
+	called := make(chan vo.DeregisterInstanceParam, 1)
+	stub := &stubNamingClient{
+		deregInstanceFunc: func(p vo.DeregisterInstanceParam) (bool, error) {
+			called <- p
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := r.Deregister(ctx, registry.Instance{Service: "s", IP: "1.1.1.1", Port: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Deregister with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case p := <-called:
+		t.Fatalf("SDK DeregisterInstance must not be called, got call for %q", p.ServiceName)
+	default:
+	}
+}
+
+// TestRegistrar_Deregister_CancelDuringSDKCall 是 #65 的核心场景：
+// 关停期 Nacos 不可达、SDK 内部阻塞重试时，closer 的超时预算必须生效——
+// ctx 取消后 Deregister 立即返回 context.Canceled，而不是等 SDK 跑完。
+func TestRegistrar_Deregister_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubNamingClient{
+		deregInstanceFunc: func(_ vo.DeregisterInstanceParam) (bool, error) {
+			close(entered)
+			<-release // 模拟 SDK 内部阻塞（不可达重试）
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- r.Deregister(ctx, registry.Instance{Service: "s", IP: "1.1.1.1", Port: 1})
+	}()
+	<-entered // SDK 调用已开始（channel 同步）
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Deregister after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Deregister blocked on SDK call after ctx cancel — shutdown budget not enforced")
+	}
+
+	// 放行后台 SDK 调用（无法中断，只会在后台完成），goroutine 不泄漏。
+	close(release)
+}
+
+// TestRegistrar_Register_CancelDuringSDKCall 同型覆盖 Register。
+func TestRegistrar_Register_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubNamingClient{
+		regInstanceFunc: func(_ vo.RegisterInstanceParam) (bool, error) {
+			close(entered)
+			<-release
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- r.Register(ctx, registry.Instance{Service: "s", IP: "1.1.1.1", Port: 1})
+	}()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Register after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Register blocked on SDK call after ctx cancel")
+	}
+	close(release)
+}
+
+// TestRegistrar_TimeoutCtxStillSucceeds 带超时预算但正常完成的调用不受影响
+// （预算充足时返回 SDK 的真实结果）。
+func TestRegistrar_TimeoutCtxStillSucceeds(t *testing.T) {
+	stub := &stubNamingClient{
+		regInstanceFunc: func(_ vo.RegisterInstanceParam) (bool, error) {
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.Register(ctx, registry.Instance{Service: "s", IP: "1.1.1.1", Port: 1}); err != nil {
+		t.Errorf("Register with ample timeout: %v", err)
+	}
+}
+
+// TestDiscoverer_Discover_PreCanceledCtx 发现路径的预取消快速失败。
+func TestDiscoverer_Discover_PreCanceledCtx(t *testing.T) {
+	called := make(chan vo.SelectInstancesParam, 1)
+	stub := &stubNamingClient{
+		selectInstancesFunc: func(p vo.SelectInstancesParam) ([]model.Instance, error) {
+			called <- p
+			return nil, nil
+		},
+	}
+	d, _ := NewDiscoverer(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := d.Discover(ctx, "svc-z")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Discover with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case p := <-called:
+		t.Fatalf("SDK SelectInstances must not be called, got call for %q", p.ServiceName)
+	default:
+	}
+
+	// DiscoverAll 同型
+	calledAll := make(chan vo.SelectAllInstancesParam, 1)
+	stubAll := &stubNamingClient{
+		selectAllInstancesFunc: func(p vo.SelectAllInstancesParam) ([]model.Instance, error) {
+			calledAll <- p
+			return nil, nil
+		},
+	}
+	dAll, _ := NewDiscoverer(stubAll)
+	if _, err := dAll.DiscoverAll(ctx, "svc-z"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DiscoverAll with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case p := <-calledAll:
+		t.Fatalf("SDK SelectAllInstances must not be called, got call for %q", p.ServiceName)
+	default:
+	}
+}
+
+// TestDiscoverer_Discover_CancelDuringSDKCall 发现路径：SDK 阻塞中取消
+// 必须立即返回。
+func TestDiscoverer_Discover_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubNamingClient{
+		selectInstancesFunc: func(_ vo.SelectInstancesParam) ([]model.Instance, error) {
+			close(entered)
+			<-release
+			return nil, nil
+		},
+	}
+	d, _ := NewDiscoverer(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := d.Discover(ctx, "svc-z")
+		errCh <- err
+	}()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Discover after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Discover blocked on SDK call after ctx cancel")
+	}
+	close(release)
+}
+
+// TestInvokeWithCtx_PanicBecomesError SDK panic 必须转为 error 返回
+// （不打死进程、不让 select 悬挂）。
+func TestInvokeWithCtx_PanicBecomesError(t *testing.T) {
+	_, err := invokeWithCtx(context.Background(), func() (bool, error) {
+		panic("sdk exploded")
+	})
+	if err == nil {
+		t.Fatal("expected error from panicked SDK call, got nil")
+	}
+	if !contains(err.Error(), "panicked") {
+		t.Errorf("err = %v, want it to mention panic", err)
+	}
 }
 
 func indexOfSub(s, sub string) int {

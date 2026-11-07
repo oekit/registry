@@ -1,3 +1,11 @@
+## [nacosimpl/v0.1.9] — 2026-11-07
+
+- build: 父模块地板对齐（嵌套 go.mod 的父仓 require 跟随最新，audit 门禁项）
+
+## [nacos/v0.1.9] — 2026-11-07
+
+- build: 父模块地板对齐（嵌套 go.mod 的父仓 require 跟随最新，audit 门禁项）
+
 ## [nacosimpl/v0.1.8] — 2026-11-07
 
 - fix(registry): EncodeTargetTags 的 tag key/value 经 QueryEscape——分隔符只由编码器产生，缓存 key 碰撞面关闭（#63）

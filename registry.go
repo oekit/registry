@@ -56,6 +56,11 @@ type Discoverer interface {
 }
 
 // Subscriber 提供服务实例变更的订阅推送能力。
+//
+// 实现契约：cb 由实现侧在 SDK 的推送 goroutine 上调用，实现必须就地
+// 隔离 cb 的 panic（recover 后转错误日志/错误面），不得让消费方回调的
+// 异常沿 SDK 内部派发链（通常全程无 recover）上抛打死宿主进程——一个
+// 服务不稳定的消费代码不能拖崩同进程其他订阅（#96）。
 type Subscriber interface {
 	// Subscribe 订阅指定服务的实例变更，当实例列表变化时回调 cb。
 	Subscribe(ctx context.Context, serviceName string, cb func([]Instance)) error

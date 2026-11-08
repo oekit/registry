@@ -35,6 +35,29 @@ func TestToInstance(t *testing.T) {
 	}
 }
 
+// TestToInstance_ClusterName 是 #94 的回归钉：model.Instance.ClusterName
+// 必须还原到 registry.Instance.Cluster——此前 toInstance 漏掉该字段，
+// 写侧（Register 把 inst.Cluster 写进 ClusterName）与读侧不对称，
+// 按集群发现的结果无法归属集群。
+func TestToInstance_ClusterName(t *testing.T) {
+	src := model.Instance{
+		Ip:          "10.0.0.1",
+		Port:        8080,
+		Weight:      10,
+		ClusterName: "gray",
+	}
+	got := toInstance("user-service", src)
+	if got.Cluster != "gray" {
+		t.Errorf("Cluster = %q, want gray", got.Cluster)
+	}
+
+	// 空集群名（未指定集群的实例）保持空串，不凭空造值。
+	src.ClusterName = ""
+	if got := toInstance("user-service", src); got.Cluster != "" {
+		t.Errorf("Cluster = %q, want empty for empty ClusterName", got.Cluster)
+	}
+}
+
 // TestToInstance_CopiesMetadata 验证转换会拷贝 metadata：Nacos SDK 会在推送
 // 更新时原地修改内部实例对象，共享 map 会引发脏读与数据竞争。
 func TestToInstance_CopiesMetadata(t *testing.T) {

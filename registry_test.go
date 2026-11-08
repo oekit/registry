@@ -298,3 +298,87 @@ func TestInfoFrom_PropagatesLoopbackRejection(t *testing.T) {
 		t.Errorf("InfoFrom err = %v, want ErrLoopbackAddr", err)
 	}
 }
+
+// hostPortAddr 是可注入任意 host 形态的 net.Addr 测试桩：net.TCPAddr 只能
+// 装合法 IP（或 nil），「域名/垃圾串」形态的 host 必须走自定义 Addr 注入。
+type hostPortAddr struct{ s string }
+
+func (a hostPortAddr) Network() string { return "tcp" }
+func (a hostPortAddr) String() string  { return a.s }
+
+// TestParseAddr_RejectsNonIPHost #77 回归：判据从「解析成功且是回环 ⇒ 拒」
+// 收紧为「不是合法 IP 字面量 ⇒ 拒」——修复前「不是 IP」的主机原样放行且
+// err==nil，实例以不可拨通的地址注册进注册中心、全程无告警（违背 ParseAddr
+// 「保证对其他节点可拨号」的文档承诺；#64 只堵了回环这一条失效路径）。
+// issue 探针的 POD_IP=not-an-ip 形态在 core#87 修复后已被上游拦下，本用例
+// 直接把垃圾 host 注入 net.Addr（等价于旧版透传面），断言 fail-closed。
+func TestParseAddr_RejectsNonIPHost(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string // host:port 形态的 addr 字符串；host 段就是要注入的垃圾值
+		want string // err 文案必须提及的 host 段
+	}{
+		{"garbage", "not-an-ip:9090", "not-an-ip"},
+		{"hostname", "localhost:9090", "localhost"},
+		{"domain", "example.internal:9090", "example.internal"},
+		{"withPort", "[1.2.3.4:8080]:9090", "1.2.3.4:8080"}, // 括号形态：host 解出 "1.2.3.4:8080"（POD_IP 带端口的注入形态）
+		{"leadingSpace", " 10.1.2.3:9090", " 10.1.2.3"},
+		{"cidrNotation", "10.1.2.3/24:9090", "10.1.2.3/24"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip, port, err := ParseAddr(hostPortAddr{tt.addr})
+			if err == nil {
+				t.Fatalf("ParseAddr addr=%q: got (%q, %d, nil), want ErrInvalidHostAddr", tt.addr, ip, port)
+			}
+			if !errors.Is(err, ErrInvalidHostAddr) {
+				t.Errorf("addr=%q err = %v, want ErrInvalidHostAddr", tt.addr, err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want it to mention the offending host %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseAddr_RejectsZonedIPv6 #77 的语义决定项（写进文档）：带 zone 的
+// IPv6（fe80::1%eth0）地址本身合法（net.ParseIP 不认、netip.ParseAddr 认），
+// 但 zone 是**本机**接口名——注册中心消费方拿到后永远拨不通，同样按
+// 「不可拨号」拒绝（ErrInvalidHostAddr）。
+func TestParseAddr_RejectsZonedIPv6(t *testing.T) {
+	// net.SplitHostPort 的括号形态：host 解出 fe80::1%eth0
+	ip, port, err := ParseAddr(hostPortAddr{"[fe80::1%eth0]:9090"})
+	if err == nil {
+		t.Fatalf("ParseAddr zoned IPv6: got (%q, %d, nil), want ErrInvalidHostAddr", ip, port)
+	}
+	if !errors.Is(err, ErrInvalidHostAddr) {
+		t.Errorf("err = %v, want ErrInvalidHostAddr", err)
+	}
+	if !strings.Contains(err.Error(), "zone") {
+		t.Errorf("err = %v, want it to mention the zone semantics", err)
+	}
+}
+
+// TestParseAddr_AcceptsPlainIPs 对照组：白名单内的正常形态不被误伤——
+// 裸 IPv4/IPv6 照常通过（#64 的回环拒绝语义不变）。
+func TestParseAddr_AcceptsPlainIPs(t *testing.T) {
+	tests := []struct {
+		name   string
+		addr   string
+		wantIP string
+	}{
+		{"ipv4", "10.20.30.40:9090", "10.20.30.40"},
+		{"ipv6", "[fd00::1]:9090", "fd00::1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip, port, err := ParseAddr(hostPortAddr{tt.addr})
+			if err != nil {
+				t.Fatalf("ParseAddr(%s): %v", tt.addr, err)
+			}
+			if ip != tt.wantIP || port != 9090 {
+				t.Errorf("ParseAddr = (%q, %d), want (%q, 9090)", ip, port, tt.wantIP)
+			}
+		})
+	}
+}

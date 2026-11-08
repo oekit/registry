@@ -1,3 +1,9 @@
+## [v0.5.7] — 2026-11-08
+
+- fix(netutil): ParseAddr 判据收紧——「不是 IP 字面量」的主机一律拒绝（#77，ErrInvalidHostAddr 新错误，与 ErrLoopbackAddr 同族）——修复前判据是「解析成功且是回环 ⇒ 拒」（#64），解析失败分支未被覆盖：域名/垃圾串 host 原样放行且 err==nil，POD_IP 配错时实例以不可拨通地址注册、全程无告警（core#87 已在上游拦非法 POD_IP，本判据是注册面的纵深）；另明确「带 zone 的 IPv6（fe80::1%eth0）」语义并写进文档：地址合法但 zone 是本机接口名，消费方永远拨不通 ⇒ 同按 ErrInvalidHostAddr 拒绝
+
+关联问题单：registry#77。
+
 ## [nacosimpl/v0.1.10] — 2026-11-08
 
 - build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）

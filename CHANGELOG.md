@@ -1,3 +1,15 @@
+## [nacosimpl/v0.1.11] — 2026-11-09
+
+- fix(nacosimpl): toInstance 保留 ClusterName——按集群过滤发现的实例可归属集群（#94）
+
+关联问题单：registry#94。
+
+## [v0.5.10] — 2026-11-09
+
+- fix(nacosimpl): toInstance 保留 ClusterName——按集群过滤发现的实例可归属集群（#94）
+
+关联问题单：registry#94。
+
 ## [v0.5.9] — 2026-11-08
 
 ### chore: v0.5.8 干净重发（tag 快照缺段，代码与 v0.5.8 完全一致）

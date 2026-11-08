@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/oekit/core/network"
 )
@@ -62,6 +64,16 @@ func ParseAddr(addr net.Addr) (string, int, error) {
 		return "", 0, fmt.Errorf("parse port %q: %w", portStr, err)
 	}
 	if host == "" || host == "::" || host == "0.0.0.0" {
+		// #77 纵深：network.GetPodIP 的口径（core#87）是「非法/非 IPv4 ⇒ 忽略并
+		// 回退网卡探测」——POD_IP=::1 这类回环值会被它静默换成本机网卡 IP，
+		// 注册面的回环拒绝（ErrLoopbackAddr）就永远看不到了。这里在回退前
+		// 直读一次 POD_IP：能解析且是回环 ⇒ 显式拒绝（配错要看得见，不能被
+		// 「善意的兜底」掩盖成看似可拨通的地址）；其余形态仍交给 GetPodIP。
+		if raw := strings.TrimSpace(os.Getenv("POD_IP")); raw != "" {
+			if cfgIP, perr := netip.ParseAddr(raw); perr == nil && cfgIP.IsLoopback() {
+				return "", 0, fmt.Errorf("refusing loopback host %q (from POD_IP): %w", raw, ErrLoopbackAddr)
+			}
+		}
 		host = network.GetPodIP()
 	}
 	// #77：判据从「解析成功且是回环 ⇒ 拒」收紧为「不是合法 IP 字面量 ⇒ 拒」。

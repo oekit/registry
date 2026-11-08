@@ -3,6 +3,12 @@
 由 oekit/registry v0.5.0 拆分而来（Nacos SPI 实现独立成模块——nacos-sdk 重依赖
 隔离在此，registry 根仓回归零第三方依赖）。
 
+## [v0.1.11] — 2026-11-09
+
+- 跟随 registry v0.5.10 发版（release_train 嵌套 train）（registry#94）
+
+关联问题单：registry#94。
+
 ## [v0.1.10] — 2026-11-08
 
 - 随本次 train 一并发布（只发嵌套模块，父模块本次不发版）

@@ -12,6 +12,10 @@ import (
 // Discoverer 实现 [registry.Discoverer] 接口，基于 Nacos naming client。
 //
 // 只返回健康实例（HealthyOnly=true）。
+//
+// 返回的 registry.Instance 会还原 Cluster（#94），但不带 Group：
+// nacos-sdk-go v2 把 Group 放在 Service 层而不在 model.Instance 上，
+// 拉取结果无法归属分组（Nacos provider 的 Discover 不返回 Group）。
 type Discoverer struct {
 	client   naming_client.INamingClient
 	group    string

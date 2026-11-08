@@ -14,6 +14,10 @@ import (
 // Subscriber 实现 [registry.Subscriber] 接口，基于 Nacos naming client。
 //
 // 利用 Nacos 的推送机制，当服务实例列表变化时回调注册的 callback。
+//
+// 回调的 registry.Instance 会还原 Cluster（#94），但不带 Group：
+// nacos-sdk-go v2 把 Group 放在 Service 层而不在 model.Instance 上，
+// 推送结果无法归属分组（Nacos provider 的 Subscribe 不返回 Group）。
 type Subscriber struct {
 	client naming_client.INamingClient
 	group  string

@@ -15,12 +15,23 @@ var log = logx.Delegating("registry/nacos")
 // toInstance 将 Nacos SDK 的 model.Instance 转换为 provider 无关的 registry.Instance。
 // metadata 做深拷贝：SDK 会在推送更新时原地修改内部实例对象，共享 map
 // 会引发脏读与数据竞争。
+//
+// Cluster 还原自 model.Instance.ClusterName（#94）：Register 写入的集群名
+// 在读取面原样带回，多集群同服务（灰度/单元化/就近路由）场景下消费方
+// 可以从结果直接归属集群。
+//
+// Group 无法还原：nacos-sdk-go v2 把 Group 放在 Service 层，不在
+// model.Instance 上——因此本包的 Discover/DiscoverAll/Subscribe 返回的
+// registry.Instance 一律不带 Group（写侧可经 Register 的 inst.Group
+// 或构造选项指定，读侧需调用方自行记忆）。这一限制是 provider 语义，
+// 见 [Discoverer] 与 [Subscriber] 的文档。
 func toInstance(serviceName string, m model.Instance) registry.Instance {
 	return registry.Instance{
 		Service:  serviceName,
 		IP:       m.Ip,
 		Port:     int(m.Port),
 		Weight:   m.Weight,
+		Cluster:  m.ClusterName,
 		Metadata: copyMetadata(m.Metadata),
 	}
 }

@@ -321,6 +321,74 @@ func TestDiscoverer_Discover_HappyPath(t *testing.T) {
 	}
 }
 
+// TestClusterRoundTrip 是 #94 的 round-trip 钉：Register 写入的集群名，
+// Discover/DiscoverAll 读回时必须原样带回（stub 充当 Nacos 服务端——
+// RegisterInstance 捕获 ClusterName，SelectInstances/SelectAllInstances
+// 按捕获值返回 model.Instance，模拟服务端持久化并回读）。
+// 此前 toInstance 丢掉 ClusterName，写读两侧不对称，按集群发现
+// （WithDiscovererClusters）的结果无法归属集群。
+func TestClusterRoundTrip(t *testing.T) {
+	// 服务端视角：Register 写入的 ClusterName 被持久化，实例查询按其返回。
+	var persistedClusterName string
+	stub := &stubNamingClient{
+		regInstanceFunc: func(p vo.RegisterInstanceParam) (bool, error) {
+			persistedClusterName = p.ClusterName
+			return true, nil
+		},
+		selectInstancesFunc: func(_ vo.SelectInstancesParam) ([]model.Instance, error) {
+			return []model.Instance{
+				{Ip: "10.0.0.1", Port: 8080, Weight: 10, ClusterName: persistedClusterName},
+			}, nil
+		},
+		selectAllInstancesFunc: func(_ vo.SelectAllInstancesParam) ([]model.Instance, error) {
+			return []model.Instance{
+				{Ip: "10.0.0.1", Port: 8080, Weight: 10, ClusterName: persistedClusterName},
+			}, nil
+		},
+	}
+
+	r, err := NewRegistrar(stub, WithRegistrarCluster("gray"))
+	if err != nil {
+		t.Fatalf("NewRegistrar: %v", err)
+	}
+	inst := registry.Instance{Service: "svc-rt", IP: "10.0.0.1", Port: 8080}
+	if err := r.Register(context.Background(), inst); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if persistedClusterName != "gray" {
+		t.Fatalf("Register did not persist ClusterName: got %q, want gray", persistedClusterName)
+	}
+
+	d, err := NewDiscoverer(stub)
+	if err != nil {
+		t.Fatalf("NewDiscoverer: %v", err)
+	}
+	got, err := d.Discover(context.Background(), "svc-rt")
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(got) != 1 || got[0].Cluster != "gray" {
+		t.Fatalf("Discover round-trip lost Cluster: got %+v, want Cluster=gray", got)
+	}
+
+	all, err := d.DiscoverAll(context.Background(), "svc-rt")
+	if err != nil {
+		t.Fatalf("DiscoverAll: %v", err)
+	}
+	if len(all) != 1 || all[0].Cluster != "gray" {
+		t.Fatalf("DiscoverAll round-trip lost Cluster: got %+v, want Cluster=gray", all)
+	}
+
+	// inst.Cluster 非空覆盖 Registrar 默认值的写侧行为也一并钉住。
+	persistedClusterName = ""
+	if err := r.Register(context.Background(), registry.Instance{Service: "svc-rt", IP: "10.0.0.2", Port: 8081, Cluster: "unit-b"}); err != nil {
+		t.Fatalf("Register with inst.Cluster: %v", err)
+	}
+	if persistedClusterName != "unit-b" {
+		t.Errorf("inst.Cluster override not written: got %q, want unit-b", persistedClusterName)
+	}
+}
+
 // TestDiscoverer_Discover_Error covers the error path.
 func TestDiscoverer_Discover_Error(t *testing.T) {
 	stub := &stubNamingClient{

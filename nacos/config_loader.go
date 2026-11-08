@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"runtime/debug"
 
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
@@ -49,7 +50,10 @@ func LoadAndMerge[T any](client config_client.IConfigClient, cfg Bootstrap, loca
 //   - current 是注册时的基线快照，onChange 必须整体替换指针、不得原地修改
 //     current（热更基于快照深拷贝，原地修改会与 SDK 回调 goroutine 竞争）；
 //   - T 必须可 JSON 往返（深拷贝依赖），否则本次热更被跳过并记 Error，
-//     绝不降级为原地合并调用方的活配置。
+//     绝不降级为原地合并调用方的活配置；
+//   - onChange 的 panic 被就地隔离（recover 转错误日志，#96）：SDK config
+//     侧在独立 goroutine 上裸调 OnChange（config_client.go 无 recover），
+//     回调异常不得打死宿主进程。
 //
 // 返回注册错误（#53）：此前 ListenConfig 失败仅 log.Error——监听根本没挂上，
 // 后续配置变更永不投递，调用方无从感知热更已失效（0.x 允许 breaking：调用方
@@ -59,6 +63,15 @@ func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T
 		DataId: cfg.DataId,
 		Group:  cfg.GroupOrDefault(),
 		OnChange: func(namespace, group, dataId, data string) {
+			// #96：SDK config 侧派发链无 recover（config_client.go 裸
+			// go listener(...)），onChange panic 会沿该 goroutine 上抛打死
+			// 进程。消费方回调质量不可控，就地隔离转为错误日志。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("config change callback panicked (isolated)",
+						"dataId", dataId, "err", r, "stack", string(debug.Stack()))
+				}
+			}()
 			log.Info("config changed", "namespace", namespace, "group", group, "dataId", dataId)
 
 			base, ok := cloneValue(current)

@@ -1,3 +1,9 @@
+## [v0.5.8] — 2026-11-08
+
+### fix(netutil): POD_IP 回环在回退网卡探测前显式拒绝——不被 GetPodIP 的非法值兜底静默掩盖（#77 纵深补丁）
+
+POD_IP=::1 时 core#87 口径的 GetPodIP 会当非法值回退网卡探测，注册面拿到看似可拨通的地址、ErrLoopbackAddr 失效（CI 实测抓到）。
+
 ## [v0.5.7] — 2026-11-08
 
 - fix(netutil): ParseAddr 判据收紧——「不是 IP 字面量」的主机一律拒绝（#77，ErrInvalidHostAddr 新错误，与 ErrLoopbackAddr 同族）——修复前判据是「解析成功且是回环 ⇒ 拒」（#64），解析失败分支未被覆盖：域名/垃圾串 host 原样放行且 err==nil，POD_IP 配错时实例以不可拨通地址注册、全程无告警（core#87 已在上游拦非法 POD_IP，本判据是注册面的纵深）；另明确「带 zone 的 IPv6（fe80::1%eth0）」语义并写进文档：地址合法但 zone 是本机接口名，消费方永远拨不通 ⇒ 同按 ErrInvalidHostAddr 拒绝

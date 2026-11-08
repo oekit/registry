@@ -3,6 +3,7 @@ package nacos
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -831,4 +832,189 @@ func indexOfSub(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// --- #95/#96 回归钉（订阅指针身份 + 回调 panic 隔离）---
+//
+// sdkLikeNamingClient 单元级复刻 nacos-sdk-go v2 的回调注册/移除机制
+// （naming_cache/subscribe_callback.go + naming_client.go）：
+//   - Subscribe 登记 &param.SubscribeCallback 指针（NewSubscribeCallback-
+//     FuncWrapper 的 CallbackFunc 字段）；
+//   - Unsubscribe 仅移除 **指针完全相同** 的 wrapper（RemoveCallbackFunc
+//     按 CallbackFunc 指针身份比较）——传新构造的 param 永远匹配不上；
+//   - 剩余 wrapper 为空（IsSubscribed=false）才触发 gRPC 层退订
+//     （serviceProxy.Unsubscribe）。
+//
+// 此前 stubNamingClient 只记录「Unsubscribe 被以什么参数调用」，
+// 完全不走 SDK 的注册/移除机制，Unsubscribe 静默 no-op 的缺陷测不出来。
+type sdkLikeNamingClient struct {
+	stubNamingClient
+
+	mu         sync.Mutex
+	registered []*func([]model.Instance, error) // 已登记的回调指针（注册序）
+	grpcUnsub  int                              // gRPC 层退订触发次数
+}
+
+func (c *sdkLikeNamingClient) Subscribe(p *vo.SubscribeParam) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registered = append(c.registered, &p.SubscribeCallback)
+	return nil
+}
+
+func (c *sdkLikeNamingClient) Unsubscribe(p *vo.SubscribeParam) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cb := &p.SubscribeCallback
+	var remain []*func([]model.Instance, error)
+	for _, item := range c.registered {
+		if item != cb {
+			remain = append(remain, item)
+		}
+	}
+	c.registered = remain
+	if len(remain) == 0 {
+		c.grpcUnsub++
+	}
+	return nil
+}
+
+// dispatch 模拟 SDK 推送：向全部未移除的回调派发一次实例变更。
+func (c *sdkLikeNamingClient) dispatch() {
+	c.mu.Lock()
+	cbs := make([]*func([]model.Instance, error), len(c.registered))
+	copy(cbs, c.registered)
+	c.mu.Unlock()
+	for _, cb := range cbs {
+		(*cb)(nil, nil)
+	}
+}
+
+// TestSubscriber_Unsubscribe_RemovesRegisteredCallback 是 #95 的回归钉：
+// Unsubscribe 必须复用注册时的同一 param 指针——否则 SDK 按指针身份
+// 移除永远匹配不上，回调 ghost 不死（每次推送仍被调用），且 IsSubscribed
+// 恒 true 连 gRPC 层退订也被跳过。钉住三个断言：①退订后推送不再触达
+// 回调；②SDK 侧 wrapper 清空；③gRPC 层退订被触发。
+func TestSubscriber_Unsubscribe_RemovesRegisteredCallback(t *testing.T) {
+	sdk := &sdkLikeNamingClient{}
+	s, err := NewSubscriber(sdk)
+	if err != nil {
+		t.Fatalf("NewSubscriber: %v", err)
+	}
+
+	calls := 0
+	if err := s.Subscribe(context.Background(), "order", func([]registry.Instance) {
+		calls++
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	sdk.dispatch()
+	if calls != 1 {
+		t.Fatalf("push before unsubscribe: calls = %d, want 1", calls)
+	}
+
+	if err := s.Unsubscribe(context.Background(), "order"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+
+	sdk.dispatch() // ghost push：退订后的推送不得再触达回调
+	if calls != 1 {
+		t.Fatalf("push after unsubscribe: calls = %d, want 1 (callback deregistration is a silent no-op, #95)", calls)
+	}
+	sdk.mu.Lock()
+	remaining, grpcUnsub := len(sdk.registered), sdk.grpcUnsub
+	sdk.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("SDK wrapper remaining after unsubscribe = %d, want 0 (param pointer identity broken, #95)", remaining)
+	}
+	if grpcUnsub != 1 {
+		t.Fatalf("gRPC-level unsubscribe fired %d times, want 1 (IsSubscribed stuck true skips it, #95)", grpcUnsub)
+	}
+}
+
+// TestSubscriber_Unsubscribe_DoubleSubscribeRemovesAll 钉住重复订阅场景：
+// 同一服务 Subscribe 两次后 Unsubscribe 一次，两个 wrapper 都必须被移除。
+func TestSubscriber_Unsubscribe_DoubleSubscribeRemovesAll(t *testing.T) {
+	sdk := &sdkLikeNamingClient{}
+	s, _ := NewSubscriber(sdk)
+	cb := func([]registry.Instance) {}
+	if err := s.Subscribe(context.Background(), "svc", cb); err != nil {
+		t.Fatalf("Subscribe #1: %v", err)
+	}
+	if err := s.Subscribe(context.Background(), "svc", cb); err != nil {
+		t.Fatalf("Subscribe #2: %v", err)
+	}
+	sdk.mu.Lock()
+	registered := len(sdk.registered)
+	sdk.mu.Unlock()
+	if registered != 2 {
+		t.Fatalf("registered wrappers after double Subscribe = %d, want 2", registered)
+	}
+	if err := s.Unsubscribe(context.Background(), "svc"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	sdk.mu.Lock()
+	remaining, grpcUnsub := len(sdk.registered), sdk.grpcUnsub
+	sdk.mu.Unlock()
+	if remaining != 0 || grpcUnsub != 1 {
+		t.Fatalf("after unsubscribe: remaining=%d grpcUnsub=%d, want 0/1", remaining, grpcUnsub)
+	}
+}
+
+// TestSubscriber_Unsubscribe_FailureReusesParamPointer 钉住退订失败重试：
+// 失败的 param 必须重新入账，重试时仍复用同一指针——换新指针将再次
+// 变成静默 no-op（#95 的原始缺陷形态）。
+func TestSubscriber_Unsubscribe_FailureReusesParamPointer(t *testing.T) {
+	var seen []*vo.SubscribeParam
+	fail := true
+	stub := &stubNamingClient{
+		unsubscribeFunc: func(p *vo.SubscribeParam) error {
+			seen = append(seen, p)
+			if fail {
+				return errors.New("nacos unavailable")
+			}
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	if err := s.Subscribe(context.Background(), "svc", func([]registry.Instance) {}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if err := s.Unsubscribe(context.Background(), "svc"); err == nil {
+		t.Fatal("expected Unsubscribe error on first attempt, got nil")
+	}
+	fail = false
+	if err := s.Unsubscribe(context.Background(), "svc"); err != nil {
+		t.Fatalf("Unsubscribe retry: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != seen[1] {
+		t.Fatalf("retry must reuse the same param pointer (SDK removes by pointer identity, #95): got %d calls, same=%v",
+			len(seen), len(seen) == 2 && seen[0] == seen[1])
+	}
+}
+
+// TestSubscriber_Subscribe_CallbackPanicIsolated 是 #96 的回归钉：
+// 消费方回调 panic 必须被就地隔离（SDK naming 推送沿 gRPC 收包
+// goroutine 直通派发，全程无 recover，裸回调会打死整个进程）。
+// 若未隔离，本测试 goroutine 直接炸穿、测试失败。
+func TestSubscriber_Subscribe_CallbackPanicIsolated(t *testing.T) {
+	var sdkCb *func([]model.Instance, error)
+	stub := &stubNamingClient{
+		subscribeFunc: func(p *vo.SubscribeParam) error {
+			sdkCb = &p.SubscribeCallback
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	if err := s.Subscribe(context.Background(), "svc", func([]registry.Instance) {
+		panic("consumer callback exploded")
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if sdkCb == nil {
+		t.Fatal("SDK Subscribe was not called")
+	}
+	// 模拟 SDK 派发链直调回调（naming_cache notifyListener → cb）。
+	(*sdkCb)(nil, nil)
 }

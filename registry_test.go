@@ -382,3 +382,59 @@ func TestParseAddr_AcceptsPlainIPs(t *testing.T) {
 		})
 	}
 }
+
+// TestParseAddr_RejectsOutOfRangePort #104 回归：端口维度此前只做语法校验
+// 不做范围校验，-1/0/70000 一律放行且 err==nil——不可拨通的地址被静默注册
+// （负端口经 nacosimpl 的 uint64 转换变成 18446744073709551615 注册进 Nacos；
+// 端口 0 对拨入方而言是「内核挑临时端口」，host:0 永远连不上）。修复后与
+// host 维度同口径 fail-closed，返回独立的 [ErrInvalidPort] sentinel。
+func TestParseAddr_RejectsOutOfRangePort(t *testing.T) {
+	tests := []struct {
+		name     string
+		addr     string
+		wantPort string // err 文案必须提及的原始端口段
+	}{
+		{"negative", "1.2.3.4:-1", "-1"},
+		{"zero", "1.2.3.4:0", "0"},
+		{"overflow", "1.2.3.4:70000", "70000"},
+		{"ipv6Overflow", "[fd00::1]:65536", "65536"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port, err := ParseAddr(hostPortAddr{tt.addr})
+			if err == nil {
+				t.Fatalf("ParseAddr addr=%q: got (%q, %d, nil), want ErrInvalidPort", tt.addr, host, port)
+			}
+			if !errors.Is(err, ErrInvalidPort) {
+				t.Errorf("addr=%q err = %v, want ErrInvalidPort", tt.addr, err)
+			}
+			if !strings.Contains(err.Error(), tt.wantPort) {
+				t.Errorf("err = %v, want it to mention the offending port %q", err, tt.wantPort)
+			}
+		})
+	}
+}
+
+// TestParseAddr_AcceptsBoundaryPorts 对照组：可拨号边界端口（1 与 65535）
+// 不被范围校验误伤——合法端口照常通过。
+func TestParseAddr_AcceptsBoundaryPorts(t *testing.T) {
+	tests := []struct {
+		name     string
+		addr     string
+		wantPort int
+	}{
+		{"min", "1.2.3.4:1", 1},
+		{"max", "1.2.3.4:65535", 65535},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port, err := ParseAddr(hostPortAddr{tt.addr})
+			if err != nil {
+				t.Fatalf("ParseAddr(%s): %v", tt.addr, err)
+			}
+			if host != "1.2.3.4" || port != tt.wantPort {
+				t.Errorf("ParseAddr = (%q, %d), want (1.2.3.4, %d)", host, port, tt.wantPort)
+			}
+		})
+	}
+}

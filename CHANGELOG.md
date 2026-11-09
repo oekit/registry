@@ -1,3 +1,17 @@
+## [nacos/v0.1.12] — 2026-11-10
+
+- - fix: ParseAddr 端口维度补 1-65535 范围校验，ErrInvalidPort 可 errors.Is 判定（#104）
+- - fix(nacos): Listen 热更合并基线改 atomic.Pointer 承接最近一次交付结果，第二次变更不再回滚第一次（#105）
+
+关联问题单：registry#104、registry#105。
+
+## [v0.5.12] — 2026-11-10
+
+- - fix: ParseAddr 端口维度补 1-65535 范围校验，ErrInvalidPort 可 errors.Is 判定（#104）
+- - fix(nacos): Listen 热更合并基线改 atomic.Pointer 承接最近一次交付结果，第二次变更不再回滚第一次（#105）
+
+关联问题单：registry#104、registry#105。
+
 ## [nacosimpl/v0.1.12] — 2026-11-09
 
 - fix(nacosimpl): Unsubscribe 复用注册 param 指针真正退订（#95）；消费者回调 panic 隔离（#96）

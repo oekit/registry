@@ -1,3 +1,21 @@
+## [nacosimpl/v0.1.12] — 2026-11-09
+
+- fix(nacosimpl): Unsubscribe 复用注册 param 指针真正退订（#95）；消费者回调 panic 隔离（#96）
+
+关联问题单：registry#95、registry#96。
+
+## [nacos/v0.1.11] — 2026-11-09
+
+- fix(nacosimpl): Unsubscribe 复用注册 param 指针真正退订（#95）；消费者回调 panic 隔离（#96）
+
+关联问题单：registry#95、registry#96。
+
+## [v0.5.11] — 2026-11-09
+
+- fix(nacosimpl): Unsubscribe 复用注册 param 指针真正退订（#95）；消费者回调 panic 隔离（#96）
+
+关联问题单：registry#95、registry#96。
+
 ## [nacosimpl/v0.1.11] — 2026-11-09
 
 - fix(nacosimpl): toInstance 保留 ClusterName——按集群过滤发现的实例可归属集群（#94）

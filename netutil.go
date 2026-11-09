@@ -27,6 +27,19 @@ var ErrLoopbackAddr = errors.New("registry: loopback address is not dialable by 
 // 可通过 errors.Is(err, ErrInvalidHostAddr) 判定。
 var ErrInvalidHostAddr = errors.New("registry: host is not a dialable IP literal")
 
+// ErrInvalidPort 表示解析出的注册端口不在可拨号范围（1..65535）（#104）。
+// ParseAddr 的文档承诺是「保证注册出去的实例地址对其他节点可拨号」——
+// 端口维度此前只做语法校验不做范围校验，-1/0/70000 一律放行且 err==nil：
+//   - 端口 0 在 TCP 语义里是「让内核挑临时端口」，对**拨入方**而言 host:0
+//     永远连不上——注册出去的实例地址不可拨通；
+//   - 负端口被下游（nacosimpl）的 uint64 转换变成 18446744073709551615
+//     原样注册进 Nacos，消费方拨号必然失败且值已失去可读性。
+//
+// 与 host 维度的 [ErrLoopbackAddr] / [ErrInvalidHostAddr] 同口径 fail-closed
+// （#64/#77 同一条「可拨号」契约的端口维度失效路径），新增独立 sentinel
+// 便于调用方区分「地址格式错」与「端口错」，可通过 errors.Is 判定。
+var ErrInvalidPort = errors.New("registry: port is outside the dialable range 1..65535")
+
 // ParseAddr 从 net.Addr 解析出 IP 和端口号。
 // 当 host 为未指定地址（空、"::" 或 "0.0.0.0"——kitex/hertz 对 ":9090" 这类
 // 通配监听时，listener.Addr() 与 WithServiceAddr 会产生这些形式）时，
@@ -48,6 +61,10 @@ var ErrInvalidHostAddr = errors.New("registry: host is not a dialable IP literal
 //     地址本身合法，但 zone 是**本机**接口名——注册中心消费方拿到
 //     `fe80::1%eth0` 永远拨不通（zone 语义只在本机有效），违背「对其他节点
 //     可拨号」承诺，显式拒绝并写进文档（#77 的遗留语义决定项）。
+//   - 端口不在 1..65535（-1 / 0 / 70000 等）⇒ 包装 [ErrInvalidPort]（#104）：
+//     端口维度此前只做语法校验不做范围校验，不可拨通的端口原样放行且
+//     err==nil——端口 0 对拨入方永远连不上，负端口经下游 uint64 转换后
+//     变成 18446744073709551615 注册进注册中心；与 host 维度同口径拒绝。
 //
 // 这是 ekit 中解析注册地址的唯一实现，kitex/registry、hertz/registry、kitex/nns
 // 应委托至此，避免逻辑重复。
@@ -62,6 +79,12 @@ func ParseAddr(addr net.Addr) (string, int, error) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		return "", 0, fmt.Errorf("parse port %q: %w", portStr, err)
+	}
+	// #104：端口维度与 host 维度同口径 fail-closed——语法合法但不可拨通的
+	// 端口（-1 / 0 / 70000）此前原样放行且 err==nil，违背「对其他节点可拨号」
+	// 的文档承诺。在 host 兜底解析前先拦，让配错端口 fail-fast、不带噪声。
+	if port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("refusing port %d (must be within 1..65535 to be dialable by other nodes): %w", port, ErrInvalidPort)
 	}
 	if host == "" || host == "::" || host == "0.0.0.0" {
 		// #77 纵深：network.GetPodIP 的口径（core#87）是「非法/非 IPv4 ⇒ 忽略并

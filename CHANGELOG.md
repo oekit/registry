@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- fix(nacos): ConfigSource.Watch 的 ctx 取消后自动反注册 SDK 监听（#126）——此前 Watch 注册后无任何停止出口，注释谎称「SDK 无监听反注册 API」（与同矩阵 nacosimpl.StopListenConfig 直接矛盾，SDK 的 IConfigClient.CancelListenConfig 一直存在）：被取消的 watcher 留下永不反注册的 SDK 监听（cacheMap 条目、服务端数据监听、推送 goroutine 只增不减），排障时按注释以为「已无监听」被误导。修法：Watch 注册成功后挂 ctx 取消钩子，取消即调 CancelListenConfig 反注册（与 nacosimpl.StopListenConfig 同一 API），删除虚假注释
+
+关联问题单：oekit/registry#126。
+
 - fix(nacosimpl): ConfigStore 回调串行投递（#127）——SDK 对同一 dataID 每次推送各起一个新 goroutine 裸调 OnChange（config_client.go:103 `go listener(...)`），两次连更并发、乱序进入消费方 onChange，与 etcdx ConfigStore「回调串行执行、不会并发调用 onChange」的承诺分裂，快速连更可能旧配置最后生效（热更最终态停在过期配置）且与读侧构成数据竞争。修法：OnChange 闭包内投递互斥锁串行化（与 etcdx 口径对齐），registry.ConfigStore.ListenConfig 的 SPI 文档补「回调串行、不并发」契约，让两种后端实现行为可互换
 
 关联问题单：oekit/registry#127。

@@ -3,6 +3,7 @@ package nacos
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
@@ -13,12 +14,20 @@ import (
 type stubConfigClient struct {
 	config_client.IConfigClient
 
-	listenConfigFunc func(vo.ConfigParam) error
+	listenConfigFunc       func(vo.ConfigParam) error
+	cancelListenConfigFunc func(vo.ConfigParam) error
 }
 
 func (s *stubConfigClient) ListenConfig(p vo.ConfigParam) error {
 	if s.listenConfigFunc != nil {
 		return s.listenConfigFunc(p)
+	}
+	return nil
+}
+
+func (s *stubConfigClient) CancelListenConfig(p vo.ConfigParam) error {
+	if s.cancelListenConfigFunc != nil {
+		return s.cancelListenConfigFunc(p)
 	}
 	return nil
 }
@@ -71,6 +80,50 @@ func TestConfigSource_Watch_OnChangePanicIsolated(t *testing.T) {
 	fired("ns", "G", "app.yaml", "anything")
 	if err := s.Err(); err != nil {
 		t.Errorf("Err() = %v, want nil (listen registered fine)", err)
+	}
+}
+
+// TestConfigSource_Watch_CtxCancelUnregistersSDKListener 是 #126 的回归钉：
+// ctx 取消后必须调用 SDK CancelListenConfig 反注册监听——此前 Watch 注册后
+// 无任何停止出口（注释谎称「SDK 无监听反注册 API」，与同矩阵
+// nacosimpl.StopListenConfig 直接矛盾），被取消的 watcher 留下永不反注册的
+// SDK 监听（cacheMap 条目、服务端数据监听、推送 goroutine 只增不减）。
+func TestConfigSource_Watch_CtxCancelUnregistersSDKListener(t *testing.T) {
+	var fired func(namespace, group, dataId, data string)
+	cancelled := make(chan vo.ConfigParam, 1)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			fired = p.OnChange
+			return nil
+		},
+		cancelListenConfigFunc: func(p vo.ConfigParam) error {
+			cancelled <- p
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := NewConfigSource(stub, Bootstrap{DataId: "app.yaml", Group: "G"})
+	delivered := 0
+	s.Watch(ctx, func() { delivered++ })
+	if fired == nil {
+		t.Fatal("ListenConfig was not registered")
+	}
+
+	cancel()
+	select {
+	case p := <-cancelled:
+		if p.DataId != "app.yaml" || p.Group != "G" {
+			t.Errorf("CancelListenConfig param = %s/%s, want app.yaml/G", p.DataId, p.Group)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ctx 取消后 SDK CancelListenConfig 未被调用——SDK 监听永不反注册（#126 泄漏）")
+	}
+
+	// ctx 取消后 onChange 不再向调用方投递（既有行为，回归钉）。
+	fired("ns", "G", "app.yaml", "late")
+	if delivered != 0 {
+		t.Errorf("ctx 取消后仍向调用方投递 %d 次, want 0", delivered)
 	}
 }
 

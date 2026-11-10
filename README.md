@@ -18,7 +18,7 @@ SPI、跨框架的服务发现桥接，以及（**独立发版的嵌套模块**�
 go get github.com/oekit/registry@v0.5.12
 
 # 要用 Nacos 实现 / Nacos 客户端门面（各自独立发版，按需取）
-go get github.com/oekit/registry/nacosimpl@v0.1.12
+go get github.com/oekit/registry/nacosimpl@v0.1.13
 go get github.com/oekit/registry/nacos@v0.1.12
 ```
 

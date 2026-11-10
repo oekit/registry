@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1061,5 +1062,71 @@ func TestConfigStore_ListenConfig_CallbackPanicIsolated(t *testing.T) {
 	fired("ns", "G", "k", "after-panic")
 	if len(got) != 1 || got[0] != "after-panic" {
 		t.Errorf("panic 后续回调未继续投递: got=%v, want=[after-panic]", got)
+	}
+}
+
+// TestConfigStore_ListenConfig_SerialDelivery 是 #127 的回归钉：SDK 对同一
+// dataID 每次推送各起一个新 goroutine 裸调 OnChange（config_client.go:103
+// `go listener(...)`），两次连更会并发、乱序进入消费方 onChange——与 etcdx
+// ConfigStore「回调在监听专属 goroutine 中串行执行（不会并发调用 onChange）」
+// 的承诺分裂，快速连更可能旧配置最后生效。
+// 用可控同步原语造确定性复现：第一次投递（旧配置 v2）卡在闸门上时发起第二次
+// 推送（新配置 v3）——串行实现下 v3 必须排队到 v2 完成之后，最终生效值为 v3。
+func TestConfigStore_ListenConfig_SerialDelivery(t *testing.T) {
+	var fired func(namespace, group, dataId, data string)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			fired = p.OnChange
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+
+	var seq, inFlight, overlap int32
+	var applied string
+	firstInside := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	err := cs.ListenConfig(context.Background(), "k", "G", func(data string) {
+		if atomic.AddInt32(&inFlight, 1) > 1 {
+			atomic.StoreInt32(&overlap, 1)
+		}
+		if atomic.AddInt32(&seq, 1) == 1 {
+			close(firstInside)
+			<-releaseFirst
+		}
+		applied = data
+		atomic.AddInt32(&inFlight, -1)
+	})
+	if err != nil {
+		t.Fatalf("ListenConfig: %v", err)
+	}
+	if fired == nil {
+		t.Fatal("SDK ListenConfig was not called")
+	}
+
+	// 第一次推送（旧配置 v2）：模拟 SDK 起 goroutine 派发，先进入回调并卡住。
+	go fired("ns", "G", "k", "v2")
+	<-firstInside
+
+	// 第二次推送（新配置 v3）：SDK 语义 = 再起一个 goroutine 裸调 OnChange。
+	p2Done := make(chan struct{})
+	go func() {
+		fired("ns", "G", "k", "v3")
+		close(p2Done)
+	}()
+	select {
+	case <-p2Done:
+		t.Error("onChange 被并发/乱序投递：第一次回调未完成时第二次已投递（与 etcdx「串行投递」承诺分裂，#127）")
+	case <-time.After(500 * time.Millisecond):
+		// v3 排队到 v2 之后（串行）——符合预期
+	}
+	close(releaseFirst)
+	<-p2Done
+
+	if atomic.LoadInt32(&overlap) != 0 {
+		t.Error("onChange 被并发调用（inFlight>1），必须串行投递（#127）")
+	}
+	if applied != "v3" {
+		t.Errorf("最终生效配置 = %q, want %q（旧配置最后生效 = #127 复发）", applied, "v3")
 	}
 }

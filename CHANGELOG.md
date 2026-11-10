@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- fix(nacosimpl): ConfigStore 回调串行投递（#127）——SDK 对同一 dataID 每次推送各起一个新 goroutine 裸调 OnChange（config_client.go:103 `go listener(...)`），两次连更并发、乱序进入消费方 onChange，与 etcdx ConfigStore「回调串行执行、不会并发调用 onChange」的承诺分裂，快速连更可能旧配置最后生效（热更最终态停在过期配置）且与读侧构成数据竞争。修法：OnChange 闭包内投递互斥锁串行化（与 etcdx 口径对齐），registry.ConfigStore.ListenConfig 的 SPI 文档补「回调串行、不并发」契约，让两种后端实现行为可互换
+
+关联问题单：oekit/registry#127。
+
 - fix(nacosimpl): ConfigStore.ListenConfig 消费回调 panic 就地隔离（#125）——SDK config 派发链在独立 goroutine 上裸调 OnChange（config_client.go:103 `go listener(...)` 全程无 recover），onChange 解析配置 panic 会沿派发 goroutine 上抛打死宿主进程；与 #96 同构换道复发（naming Subscribe / nacos.Listen / nacos.ConfigSource.Watch 均已收编，唯独 config store 漏网）。修法：OnChange 闭包内 defer recover 转 Error 日志 + stack（与 nacos.Listen 的 #96 收编逐字同款），并给 registry.ConfigStore.ListenConfig 的 SPI 文档补 panic 隔离契约，堵住下一个实现面
 
 关联问题单：oekit/registry#125。

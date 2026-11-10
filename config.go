@@ -20,6 +20,12 @@ type ConfigStore interface {
 	//
 	// onChange 接收最新的配置内容字符串。实现应确保回调在独立 goroutine
 	// 中执行或不会阻塞监听循环。
+	//
+	// 契约：
+	//   - 实现必须就地隔离 onChange 的 panic（recover 转错误日志 + stack），
+	//     不得让消费方回调的异常沿 SDK 内部派发链上抛打死宿主进程
+	//     （与 Subscriber.Subscribe 同款隔离要求，#125）；
+	//   - 回调必须串行投递、不并发调用 onChange（与 etcdx 实现同口径，#127）。
 	ListenConfig(ctx context.Context, dataID, group string, onChange func(data string)) error
 
 	// StopListenConfig 停止监听指定 dataID 的配置变更。

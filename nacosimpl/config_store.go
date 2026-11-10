@@ -2,6 +2,8 @@ package nacos
 
 import (
 	"context"
+	"runtime/debug"
+	"sync"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
@@ -45,10 +47,27 @@ func (s *ConfigStore) GetConfig(ctx context.Context, dataID, group string) (stri
 //
 // 当配置内容变化时，回调 onChange 并传入最新内容字符串。
 func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, onChange func(data string)) error {
+	var deliverMu sync.Mutex
 	err := s.client.ListenConfig(vo.ConfigParam{
 		DataId: dataID,
 		Group:  group,
 		OnChange: func(_, _, dataID, data string) {
+			// #127：SDK 对同一 dataID 每次推送各起一个新 goroutine 裸调
+			// OnChange（config_client.go 裸 go listener(...)），两次连更会
+			// 并发、乱序进入消费方 onChange——与 etcdx ConfigStore「回调串行
+			// 执行、不会并发调用 onChange」的承诺分裂，快速连更可能旧配置
+			// 最后生效。投递前加锁串行化，与 etcdx 口径对齐。
+			deliverMu.Lock()
+			defer deliverMu.Unlock()
+			// #96/#125：SDK config 侧派发链无 recover（config_client.go 裸
+			// go listener(...)），onChange panic 会沿该 goroutine 上抛打死
+			// 进程。消费方回调质量不可控，就地隔离转为错误日志。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("config change callback panicked (isolated)",
+						"dataId", dataID, "err", r, "stack", string(debug.Stack()))
+				}
+			}()
 			log.Info("config changed", "dataId", dataID)
 			onChange(data)
 		},

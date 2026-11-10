@@ -56,7 +56,11 @@ func (s *ConfigSource) Read() ([]byte, error) {
 }
 
 // Watch 监听配置变更，变更时调用 onChange（异步，立即返回）。
-// Nacos SDK 无监听反注册 API，ctx 取消后 onChange 不再向调用方投递。
+//
+// ctx 取消后：onChange 不再向调用方投递，且自动调用 SDK CancelListenConfig
+// 反注册监听（#126）——SDK 有反注册 API（同矩阵 nacosimpl.StopListenConfig
+// 即调它实现），不反注册会让被取消的 watcher 留下永不释放的 SDK 监听
+// （cacheMap 条目、服务端数据监听、推送 goroutine 只增不减）。
 //
 // onChange 的 panic 被就地隔离（recover 转错误日志，#96）：SDK config 侧
 // 在独立 goroutine 上裸调 OnChange（config_client.go 无 recover），回调
@@ -94,4 +98,16 @@ func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 		s.listenErr.Store(&err)
 		return
 	}
+	// #126：ctx 取消即向 SDK 反注册监听（CancelListenConfig，与
+	// nacosimpl.StopListenConfig 同一 API）。此前 Watch 无任何停止出口，
+	// 被取消的 watcher 的 SDK 监听永不释放（泄漏 + 推送空跑）。
+	go func() {
+		<-ctx.Done()
+		if err := s.client.CancelListenConfig(vo.ConfigParam{
+			DataId: s.cfg.DataId,
+			Group:  s.cfg.GroupOrDefault(),
+		}); err != nil {
+			log.Error("cancel listen config failed", "dataId", s.cfg.DataId, "err", err)
+		}
+	}()
 }

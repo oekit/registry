@@ -1,3 +1,7 @@
+## [nacosimpl/v0.1.13] — 2026-11-10
+
+- - build: 嵌套地板发布——registry v0.5.12（floor sync，无代码变更）
+
 ## [nacos/v0.1.12] — 2026-11-10
 
 - - fix: ParseAddr 端口维度补 1-65535 范围校验，ErrInvalidPort 可 errors.Is 判定（#104）

@@ -15,11 +15,11 @@ SPI、跨框架的服务发现桥接，以及（**独立发版的嵌套模块**�
 
 ```bash
 # 只想要 SPI 接口（根模块**零第三方依赖**）
-go get github.com/oekit/registry@v0.5.11
+go get github.com/oekit/registry@v0.5.12
 
 # 要用 Nacos 实现 / Nacos 客户端门面（各自独立发版，按需取）
 go get github.com/oekit/registry/nacosimpl@v0.1.12
-go get github.com/oekit/registry/nacos@v0.1.11
+go get github.com/oekit/registry/nacos@v0.1.12
 ```
 
 > **为什么 Nacos 实现是嵌套模块**：实测 `nacos-sdk-go/v2` 单独引入即拖进 **63 个第三方模块**

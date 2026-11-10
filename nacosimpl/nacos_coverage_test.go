@@ -1018,3 +1018,48 @@ func TestSubscriber_Subscribe_CallbackPanicIsolated(t *testing.T) {
 	// 模拟 SDK 派发链直调回调（naming_cache notifyListener → cb）。
 	(*sdkCb)(nil, nil)
 }
+
+// TestConfigStore_ListenConfig_CallbackPanicIsolated 是 #125 的回归钉：
+// 消费方 onChange 的 panic 必须被就地隔离——SDK config 侧在独立 goroutine
+// 上裸调 OnChange（config_client.go:103 go listener(...) 全程无 recover），
+// 回调 panic 会沿该 goroutine 上抛打死宿主进程。
+// 断言：回调 panic 后宿主（测试进程）仍存活，且后续回调仍继续投递。
+func TestConfigStore_ListenConfig_CallbackPanicIsolated(t *testing.T) {
+	var fired func(namespace, group, dataId, data string)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			fired = p.OnChange
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+	var got []string
+	err := cs.ListenConfig(context.Background(), "k", "G", func(data string) {
+		if data == "boom" {
+			panic("consumer callback exploded")
+		}
+		got = append(got, data)
+	})
+	if err != nil {
+		t.Fatalf("ListenConfig: %v", err)
+	}
+	if fired == nil {
+		t.Fatal("SDK ListenConfig was not called")
+	}
+
+	// 模拟 SDK 派发 goroutine 直调 OnChange：panic 不得逃逸出闭包。
+	var escaped any
+	func() {
+		defer func() { escaped = recover() }()
+		fired("ns", "G", "k", "boom")
+	}()
+	if escaped != nil {
+		t.Errorf("onChange 的 panic 逃逸出 SDK 派发闭包（未隔离，会沿派发 goroutine 打死宿主进程）: %v", escaped)
+	}
+
+	// 回调 panic 后宿主仍存活且后续回调仍继续投递。
+	fired("ns", "G", "k", "after-panic")
+	if len(got) != 1 || got[0] != "after-panic" {
+		t.Errorf("panic 后续回调未继续投递: got=%v, want=[after-panic]", got)
+	}
+}

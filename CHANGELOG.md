@@ -1,3 +1,9 @@
+## [Unreleased]
+
+- fix(nacosimpl): ConfigStore.ListenConfig 消费回调 panic 就地隔离（#125）——SDK config 派发链在独立 goroutine 上裸调 OnChange（config_client.go:103 `go listener(...)` 全程无 recover），onChange 解析配置 panic 会沿派发 goroutine 上抛打死宿主进程；与 #96 同构换道复发（naming Subscribe / nacos.Listen / nacos.ConfigSource.Watch 均已收编，唯独 config store 漏网）。修法：OnChange 闭包内 defer recover 转 Error 日志 + stack（与 nacos.Listen 的 #96 收编逐字同款），并给 registry.ConfigStore.ListenConfig 的 SPI 文档补 panic 隔离契约，堵住下一个实现面
+
+关联问题单：oekit/registry#125。
+
 ## [v0.5.13] — 2026-11-10
 
 - - build: 依赖地板对齐（第二轮发版后 floor sync，无代码变更）

@@ -2,6 +2,7 @@ package nacos
 
 import (
 	"context"
+	"runtime/debug"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
@@ -49,6 +50,15 @@ func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, on
 		DataId: dataID,
 		Group:  group,
 		OnChange: func(_, _, dataID, data string) {
+			// #96/#125：SDK config 侧派发链无 recover（config_client.go 裸
+			// go listener(...)），onChange panic 会沿该 goroutine 上抛打死
+			// 进程。消费方回调质量不可控，就地隔离转为错误日志。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("config change callback panicked (isolated)",
+						"dataId", dataID, "err", r, "stack", string(debug.Stack()))
+				}
+			}()
 			log.Info("config changed", "dataId", dataID)
 			onChange(data)
 		},

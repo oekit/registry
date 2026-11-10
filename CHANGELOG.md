@@ -1,3 +1,7 @@
+## [v0.5.13] — 2026-11-10
+
+- - build: 依赖地板对齐（第二轮发版后 floor sync，无代码变更）
+
 ## [nacosimpl/v0.1.13] — 2026-11-10
 
 - - build: 嵌套地板发布——registry v0.5.12（floor sync，无代码变更）

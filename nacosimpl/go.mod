@@ -16,9 +16,9 @@ go 1.24.0
 // v0.5.0 起该目录已随嵌套模块移出 registry 仓。
 require (
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6-0.20260601044846-0e3d1d099507
-	github.com/oekit/core v0.13.5
-	github.com/oekit/logx v0.8.12
-	github.com/oekit/registry v0.5.11
+	github.com/oekit/core v0.13.6
+	github.com/oekit/logx v0.9.0
+	github.com/oekit/registry v0.5.12
 )
 
 require (

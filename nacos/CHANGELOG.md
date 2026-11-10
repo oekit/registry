@@ -3,6 +3,12 @@
 由 oekit/registry v0.5.0 拆分而来（Nacos 客户端门面独立成模块——nacos-sdk 重依赖
 隔离在此，registry 根仓回归零第三方依赖）。
 
+## [v0.1.12] — 2026-11-10
+
+- 跟随 registry v0.5.12 发版（release_train 嵌套 train）（registry#104、registry#105）
+
+关联问题单：registry#104、registry#105。
+
 ## [v0.1.11] — 2026-11-09
 
 - 跟随 registry v0.5.11 发版（release_train 嵌套 train）（registry#95、registry#96）

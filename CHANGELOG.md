@@ -1,3 +1,36 @@
+## [nacosimpl/v0.2.0] — 2026-11-12
+
+- **BREAKING**（nacosimpl v0.2.0，0.x minor）删 nacosimpl.GetPodIP 纯转发零调用导出（registry#139）——全仓零引用，注册地址改走 registry.ParseAddr / registry.InfoFrom（回环/非法地址 fail-closed），nacos/doc.go 注册示例同步改写
+- fix(nacosimpl): Subscriber 推送错误按服务分账（registry#142，P2）——此前 lastErr 全局单值跨服务串扰（任一服务失败置位、任一服务成功清零，A 的陈旧视图被 B 的成功推送伪装成健康）；改 map[service]error 按服务记账，LastErr() 聚合（errors.Join）、新增 LastErrFor(service)，退订成功清账；补跨服务串扰/聚合/退订清账回归测试
+- fix(nacosimpl): ConfigStore ctx 纪律对齐（registry#143）——GetConfig/StopListenConfig 走 invokeWithCtx 竞速（预取消快速失败、进行中取消立即返回，新增 error-only 变体 invokeWithCtxErr），ListenConfig 进入前 ctx.Err() 预检并在 godoc 钉明 onChange 不受 ctx 管理；补回归测试 ×4
+- refactor(nacosimpl): Registrar.Register/Deregister 的 group/cluster 覆盖逻辑收敛 resolveGroupCluster 单源（registry#140）；日志组件名统一模块前缀（registry#141）：nacos 包 nacos→registry/nacos、nacosimpl 包 registry/nacos→registry/nacosimpl
+- fix(nacos): ConfigSource.Watch 的 ctx 收尾 goroutine 补内联 recover（registry#144）——SDK CancelListenConfig panic 不得打死宿主进程（与 onChange 的 #96 隔离同口径）；补 panic 隔离回归测试
+- build: Go 地板 1.24.0→1.26.0（根 + nacos + nacosimpl 三模块，ci.yml go-version '1.26'）；logx 地板 v0.9.2→v0.10.0；EncodeTargetTags/copyMetadata 改 slices.Sorted(maps.Keys())/maps.Clone
+
+关联问题单：registry#139、registry#140、registry#141、registry#142、registry#143、registry#144。
+
+## [nacos/v0.1.14] — 2026-11-12
+
+- **BREAKING**（nacosimpl v0.2.0，0.x minor）删 nacosimpl.GetPodIP 纯转发零调用导出（registry#139）——全仓零引用，注册地址改走 registry.ParseAddr / registry.InfoFrom（回环/非法地址 fail-closed），nacos/doc.go 注册示例同步改写
+- fix(nacosimpl): Subscriber 推送错误按服务分账（registry#142，P2）——此前 lastErr 全局单值跨服务串扰（任一服务失败置位、任一服务成功清零，A 的陈旧视图被 B 的成功推送伪装成健康）；改 map[service]error 按服务记账，LastErr() 聚合（errors.Join）、新增 LastErrFor(service)，退订成功清账；补跨服务串扰/聚合/退订清账回归测试
+- fix(nacosimpl): ConfigStore ctx 纪律对齐（registry#143）——GetConfig/StopListenConfig 走 invokeWithCtx 竞速（预取消快速失败、进行中取消立即返回，新增 error-only 变体 invokeWithCtxErr），ListenConfig 进入前 ctx.Err() 预检并在 godoc 钉明 onChange 不受 ctx 管理；补回归测试 ×4
+- refactor(nacosimpl): Registrar.Register/Deregister 的 group/cluster 覆盖逻辑收敛 resolveGroupCluster 单源（registry#140）；日志组件名统一模块前缀（registry#141）：nacos 包 nacos→registry/nacos、nacosimpl 包 registry/nacos→registry/nacosimpl
+- fix(nacos): ConfigSource.Watch 的 ctx 收尾 goroutine 补内联 recover（registry#144）——SDK CancelListenConfig panic 不得打死宿主进程（与 onChange 的 #96 隔离同口径）；补 panic 隔离回归测试
+- build: Go 地板 1.24.0→1.26.0（根 + nacos + nacosimpl 三模块，ci.yml go-version '1.26'）；logx 地板 v0.9.2→v0.10.0；EncodeTargetTags/copyMetadata 改 slices.Sorted(maps.Keys())/maps.Clone
+
+关联问题单：registry#139、registry#140、registry#141、registry#142、registry#143、registry#144。
+
+## [v0.5.15] — 2026-11-12
+
+- **BREAKING**（nacosimpl v0.2.0，0.x minor）删 nacosimpl.GetPodIP 纯转发零调用导出（registry#139）——全仓零引用，注册地址改走 registry.ParseAddr / registry.InfoFrom（回环/非法地址 fail-closed），nacos/doc.go 注册示例同步改写
+- fix(nacosimpl): Subscriber 推送错误按服务分账（registry#142，P2）——此前 lastErr 全局单值跨服务串扰（任一服务失败置位、任一服务成功清零，A 的陈旧视图被 B 的成功推送伪装成健康）；改 map[service]error 按服务记账，LastErr() 聚合（errors.Join）、新增 LastErrFor(service)，退订成功清账；补跨服务串扰/聚合/退订清账回归测试
+- fix(nacosimpl): ConfigStore ctx 纪律对齐（registry#143）——GetConfig/StopListenConfig 走 invokeWithCtx 竞速（预取消快速失败、进行中取消立即返回，新增 error-only 变体 invokeWithCtxErr），ListenConfig 进入前 ctx.Err() 预检并在 godoc 钉明 onChange 不受 ctx 管理；补回归测试 ×4
+- refactor(nacosimpl): Registrar.Register/Deregister 的 group/cluster 覆盖逻辑收敛 resolveGroupCluster 单源（registry#140）；日志组件名统一模块前缀（registry#141）：nacos 包 nacos→registry/nacos、nacosimpl 包 registry/nacos→registry/nacosimpl
+- fix(nacos): ConfigSource.Watch 的 ctx 收尾 goroutine 补内联 recover（registry#144）——SDK CancelListenConfig panic 不得打死宿主进程（与 onChange 的 #96 隔离同口径）；补 panic 隔离回归测试
+- build: Go 地板 1.24.0→1.26.0（根 + nacos + nacosimpl 三模块，ci.yml go-version '1.26'）；logx 地板 v0.9.2→v0.10.0；EncodeTargetTags/copyMetadata 改 slices.Sorted(maps.Keys())/maps.Clone
+
+关联问题单：registry#139、registry#140、registry#141、registry#142、registry#143、registry#144。
+
 ## [v0.5.14] — 2026-11-11
 
 - docs(config): ConfigStore.ListenConfig SPI 补「panic 隔离」「回调串行、不并发」契约（#125、#127）——与 nacosimpl v0.1.14 的实现修复配套，堵住下一个实现面。本 train 同时发布 nacos/v0.1.13（#126）与 nacosimpl/v0.1.14（#125、#127）。

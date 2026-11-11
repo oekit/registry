@@ -3,6 +3,12 @@
 由 oekit/registry v0.5.0 拆分而来（Nacos 客户端门面独立成模块——nacos-sdk 重依赖
 隔离在此，registry 根仓回归零第三方依赖）。
 
+## [v0.1.14] — 2026-11-12
+
+- 跟随 registry v0.5.15 发版（release_train 嵌套 train）（registry#139、registry#140、registry#141、registry#142、registry#143、registry#144）
+
+关联问题单：registry#139、registry#140、registry#141、registry#142、registry#143、registry#144。
+
 ## [v0.1.13] — 2026-11-11
 
 - fix(nacos): ConfigSource.Watch 的 ctx 取消后自动反注册 SDK 监听（#126）——此前 Watch 注册后无任何停止出口，注释谎称「SDK 无监听反注册 API」（与同矩阵 nacosimpl.StopListenConfig 直接矛盾，SDK 的 IConfigClient.CancelListenConfig 一直存在）：被取消的 watcher 留下永不反注册的 SDK 监听（cacheMap 条目、服务端数据监听、推送 goroutine 只增不减），排障时按注释以为「已无监听」被误导。修法：Watch 注册成功后挂 ctx 取消钩子，取消即调 CancelListenConfig 反注册（与 nacosimpl.StopListenConfig 同一 API），删除虚假注释

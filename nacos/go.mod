@@ -11,7 +11,7 @@ go 1.24.0
 // 嵌套模块的职责是**依赖隔离**，不是目录组织：父仓 registry 保持零 nacos-sdk。
 // 隔离方向是「父←子」：只 import 父仓的消费者不会拉进本模块的重依赖。
 require (
-	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6-0.20260601044846-0e3d1d099507
+	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6
 	github.com/oekit/core v0.14.2
 	github.com/oekit/logx v0.9.2
 	gopkg.in/yaml.v3 v3.0.1

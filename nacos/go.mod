@@ -1,6 +1,6 @@
 module github.com/oekit/registry/nacos
 
-go 1.24.0
+go 1.26.0
 
 // 嵌套模块：Nacos 配置源 / 客户端封装。
 //
@@ -13,7 +13,7 @@ go 1.24.0
 require (
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6
 	github.com/oekit/core v0.14.2
-	github.com/oekit/logx v0.9.2
+	github.com/oekit/logx v0.10.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

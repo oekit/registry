@@ -62,6 +62,21 @@ func NewRegistrar(client naming_client.INamingClient, opts ...RegistrarOption) (
 	return r, nil
 }
 
+// resolveGroupCluster 解析本次注册/反注册生效的 Group 与 Cluster：
+// inst.Group / inst.Cluster 非空时覆盖 Registrar 构造时指定的默认值
+// （#140：Register/Deregister 曾各写一遍逐字相同的覆盖逻辑，收敛为单源）。
+func (r *Registrar) resolveGroupCluster(inst registry.Instance) (string, string) {
+	groupName := r.group
+	if inst.Group != "" {
+		groupName = inst.Group
+	}
+	clusterName := r.cluster
+	if inst.Cluster != "" {
+		clusterName = inst.Cluster
+	}
+	return groupName, clusterName
+}
+
 // Register 将服务实例注册到 Nacos。
 //
 // 从 inst 读取 Service、IP、Port、Weight、Metadata。
@@ -76,14 +91,7 @@ func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error 
 		weight = 10
 	}
 
-	groupName := r.group
-	if inst.Group != "" {
-		groupName = inst.Group
-	}
-	clusterName := r.cluster
-	if inst.Cluster != "" {
-		clusterName = inst.Cluster
-	}
+	groupName, clusterName := r.resolveGroupCluster(inst)
 
 	ok, err := invokeWithCtx(ctx, func() (bool, error) {
 		return r.client.RegisterInstance(vo.RegisterInstanceParam{
@@ -118,14 +126,7 @@ func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error 
 // 但底层 SDK 反注册无法被中断，会在后台自行完成。Nacos 临时实例
 // （Ephemeral=true）心跳停止后也会被服务端摘除，反注册是加速手段。
 func (r *Registrar) Deregister(ctx context.Context, inst registry.Instance) error {
-	groupName := r.group
-	if inst.Group != "" {
-		groupName = inst.Group
-	}
-	clusterName := r.cluster
-	if inst.Cluster != "" {
-		clusterName = inst.Cluster
-	}
+	groupName, clusterName := r.resolveGroupCluster(inst)
 
 	ok, err := invokeWithCtx(ctx, func() (bool, error) {
 		return r.client.DeregisterInstance(vo.DeregisterInstanceParam{

@@ -83,6 +83,35 @@ func TestConfigSource_Watch_OnChangePanicIsolated(t *testing.T) {
 	}
 }
 
+// TestConfigSource_Watch_CancelPanicIsolated 是 #144 的回归钉：Watch 的 ctx
+// 收尾 goroutine 会跑进 provider SDK 的 CancelListenConfig——SDK 在该调用里
+// panic 时不得沿 goroutine 逃逸打死宿主进程（与同一方法内 onChange 的就地
+// 隔离 #96 同口径，也同 nacosimpl invokeWithCtx 先例）。若隔离缺失，panic
+// 逃逸出 goroutine，整个测试二进制当场崩溃（比断言失败更响）。
+func TestConfigSource_Watch_CancelPanicIsolated(t *testing.T) {
+	cancelEntered := make(chan struct{})
+	stub := &stubConfigClient{
+		cancelListenConfigFunc: func(_ vo.ConfigParam) error {
+			close(cancelEntered) // 先留痕再 panic：证明收尾 goroutine 确实跑进了 SDK 调用
+			panic("nacos sdk panicked in CancelListenConfig")
+		},
+	}
+	s := NewConfigSource(stub, Bootstrap{DataId: "app.yaml", Group: "G"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Watch(ctx, func() {})
+
+	cancel() // 触发收尾 goroutine：<-ctx.Done() → CancelListenConfig → panic
+	select {
+	case <-cancelEntered:
+		// 收尾 goroutine 已进入 SDK 调用并 panic——进程仍存活到此处即证明
+		// panic 被就地隔离（#144）。recover 分支会写一条 Error 日志（可观测），
+		// 此处不再断言日志内容。
+	case <-time.After(5 * time.Second):
+		t.Fatal("ctx 取消后收尾 goroutine 未进入 CancelListenConfig")
+	}
+}
+
 // TestConfigSource_Watch_CtxCancelUnregistersSDKListener 是 #126 的回归钉：
 // ctx 取消后必须调用 SDK CancelListenConfig 反注册监听——此前 Watch 注册后
 // 无任何停止出口（注释谎称「SDK 无监听反注册 API」，与同矩阵

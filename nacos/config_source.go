@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/oekit/core/config"
+	"github.com/oekit/logx"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
@@ -64,7 +65,8 @@ func (s *ConfigSource) Read() ([]byte, error) {
 //
 // onChange 的 panic 被就地隔离（recover 转错误日志，#96）：SDK config 侧
 // 在独立 goroutine 上裸调 OnChange（config_client.go 无 recover），回调
-// 异常不得打死宿主进程。
+// 异常不得打死宿主进程。ctx 收尾 goroutine 里的 SDK 反注册调用（#126）同样
+// 就地隔离（#144）——SDK 在 CancelListenConfig 内部 panic 不得打死宿主进程。
 //
 // ⚠️ 本方法实现 core/config.ConfigSource 接口（void 签名不可改）：注册失败
 // 经 **Err()** 可查询（#53）——ListenConfig 失败仅靠一条 ERROR 日志不可见，
@@ -101,13 +103,25 @@ func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 	// #126：ctx 取消即向 SDK 反注册监听（CancelListenConfig，与
 	// nacosimpl.StopListenConfig 同一 API）。此前 Watch 无任何停止出口，
 	// 被取消的 watcher 的 SDK 监听永不释放（泄漏 + 推送空跑）。
+	//
+	// #144：收尾 goroutine 会跑进 provider SDK 的 CancelListenConfig——
+	// SDK 内部断言/空指针等 panic 会沿 goroutine 逃逸打死宿主进程，与
+	// onChange 的就地隔离（#96，上方）是同一故障的两个面。照仓内先例
+	// （本方法 onChange、nacosimpl invokeWithCtx）加内联 recover：panic 转
+	// 错误日志，反注册失败只损失一次清理，不炸进程。
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("cancel listen config panicked (isolated)",
+					"dataId", s.cfg.DataId, logx.ErrKey, r, "stack", string(debug.Stack()))
+			}
+		}()
 		<-ctx.Done()
 		if err := s.client.CancelListenConfig(vo.ConfigParam{
 			DataId: s.cfg.DataId,
 			Group:  s.cfg.GroupOrDefault(),
 		}); err != nil {
-			log.Error("cancel listen config failed", "dataId", s.cfg.DataId, "err", err)
+			log.Error("cancel listen config failed", "dataId", s.cfg.DataId, logx.ErrKey, err)
 		}
 	}()
 }

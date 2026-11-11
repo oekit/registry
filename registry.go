@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -175,11 +176,7 @@ func EncodeTargetTags(host string, tags map[string]string) string {
 	if len(tags) == 0 {
 		return host
 	}
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(tags))
 
 	var sb strings.Builder
 	sb.WriteString(host)

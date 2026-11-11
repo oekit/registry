@@ -1,6 +1,6 @@
 module github.com/oekit/registry
 
-go 1.24.0
+go 1.26.0
 
 // 根模块 = 注册发现**接口** + core（仅标准库 + core/network）。
 //

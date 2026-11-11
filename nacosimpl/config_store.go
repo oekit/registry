@@ -32,10 +32,18 @@ func NewConfigStore(client config_client.IConfigClient) (*ConfigStore, error) {
 // GetConfig 从 Nacos 配置中心拉取指定 dataID 的配置内容。
 //
 // 配置不存在时返回空字符串和 nil error。
+//
+// ctx 语义（#143，与 Registrar/Discoverer 的 #65 纪律对齐）：SDK API 不接收
+// context，无法真正中断底层调用。这里以竞速方式兜底——ctx 已取消/超时时
+// 快速失败返回 ctx.Err()（不发起或不再等待 SDK 调用）；SDK 调用若已在进行
+// 会在后台自行完成（结果丢弃）。消费方（如 nns 逐服务串行拉配置）传入的
+// 取消/超时预算对 config 路径生效。
 func (s *ConfigStore) GetConfig(ctx context.Context, dataID, group string) (string, error) {
-	content, err := s.client.GetConfig(vo.ConfigParam{
-		DataId: dataID,
-		Group:  group,
+	content, err := invokeWithCtx(ctx, func() (string, error) {
+		return s.client.GetConfig(vo.ConfigParam{
+			DataId: dataID,
+			Group:  group,
+		})
 	})
 	if err != nil {
 		return "", wrapErr("get config", dataID+"/"+group, err)
@@ -46,7 +54,15 @@ func (s *ConfigStore) GetConfig(ctx context.Context, dataID, group string) (stri
 // ListenConfig 监听指定 dataID 的配置变更。
 //
 // 当配置内容变化时，回调 onChange 并传入最新内容字符串。
+//
+// ctx 语义（#143）：注册本身是 SDK 侧的快速本地登记，仅做进入前 ctx.Err()
+// 预检（ctx 已取消/超时直接失败，不发起注册）；**onChange 不受 ctx 管理**——
+// 监听挂上后 SDK 派发链持续投递，ctx 取消不会停止监听，需要停监听走
+// [ConfigStore.StopListenConfig]。
 func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, onChange func(data string)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var deliverMu sync.Mutex
 	err := s.client.ListenConfig(vo.ConfigParam{
 		DataId: dataID,
@@ -79,12 +95,16 @@ func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, on
 }
 
 // StopListenConfig 停止监听指定 dataID 的配置变更。
+//
+// ctx 语义（#143）：与 [ConfigStore.GetConfig] 相同——竞速兜底，ctx 已取消/
+// 超时快速失败，不再等待 SDK 调用。
 func (s *ConfigStore) StopListenConfig(ctx context.Context, dataID, group string) error {
-	err := s.client.CancelListenConfig(vo.ConfigParam{
-		DataId: dataID,
-		Group:  group,
-	})
-	if err != nil {
+	if err := invokeWithCtxErr(ctx, func() error {
+		return s.client.CancelListenConfig(vo.ConfigParam{
+			DataId: dataID,
+			Group:  group,
+		})
+	}); err != nil {
 		return wrapErr("stop listen config", dataID+"/"+group, err)
 	}
 	return nil

@@ -21,6 +21,7 @@ import (
 // 本用例把文档里承诺的调用形态逐一编译一遍 ⇒ 文档再漂移时**当场红**。
 func TestDocumentedAPI_SignaturePins(t *testing.T) {
 	// 包文档示例里的四个构造器：都返回 (T, error)。
+	//nolint:staticcheck // 显式签名钉：省略 type 后编译器不再核对签名，断言失去意义 (QF1011)
 	var (
 		_ func(naming_client.INamingClient, ...RegistrarOption) (*Registrar, error)   = NewRegistrar
 		_ func(naming_client.INamingClient, ...DiscovererOption) (*Discoverer, error) = NewDiscoverer
@@ -29,6 +30,7 @@ func TestDocumentedAPI_SignaturePins(t *testing.T) {
 	)
 
 	// 三个组选项是**各自独立**的类型（不是同一个 WithGroup）。
+	//nolint:staticcheck // 显式类型钉：省略 type 后不再核对选项类型独立性 (QF1011)
 	var (
 		_ RegistrarOption  = WithRegistrarGroup("g")
 		_ DiscovererOption = WithDiscovererGroup("g")

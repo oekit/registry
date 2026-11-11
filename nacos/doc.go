@@ -45,9 +45,15 @@
 //	if err != nil {
 //	    return err
 //	}
+//	// 注册地址从监听地址解析：registry.ParseAddr 对回环/非 IP 字面量/非法端口
+//	// fail-closed 拒绝（保证注册出去的地址对其他节点可拨号，#64/#77/#104）。
+//	ip, port, err := registry.ParseAddr(lis.Addr())
+//	if err != nil {
+//	    return err
+//	}
 //	err = reg.Register(ctx, registry.Instance{
 //	    Service:  cfg.ServiceName,
-//	    IP:       nacosimpl.GetPodIP(),
+//	    IP:       ip,
 //	    Port:     port,
 //	    Metadata: version.Metadata(),
 //	})

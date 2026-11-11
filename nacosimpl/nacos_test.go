@@ -2,7 +2,6 @@ package nacos
 
 import (
 	"errors"
-	"os"
 	"testing"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
@@ -104,23 +103,6 @@ func TestToInstances_Empty(t *testing.T) {
 	result := toInstances("svc", nil)
 	if len(result) != 0 {
 		t.Errorf("expected empty slice, got %d items", len(result))
-	}
-}
-
-func TestGetPodIP_FromEnv(t *testing.T) {
-	t.Setenv("POD_IP", "10.1.2.3")
-	if got := GetPodIP(); got != "10.1.2.3" {
-		t.Errorf("GetPodIP() = %q, want 10.1.2.3", got)
-	}
-}
-
-func TestGetPodIP_FallbackLoopback(t *testing.T) {
-	os.Unsetenv("POD_IP")
-	// In CI/test environments without non-loopback interfaces,
-	// this may return a real IP or 127.0.0.1. We just verify it's non-empty.
-	got := GetPodIP()
-	if got == "" {
-		t.Error("GetPodIP() returned empty string")
 	}
 }
 

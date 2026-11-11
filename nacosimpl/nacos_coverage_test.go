@@ -3,6 +3,7 @@ package nacos
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -354,8 +355,8 @@ func TestClusterRoundTrip(t *testing.T) {
 		t.Fatalf("NewRegistrar: %v", err)
 	}
 	inst := registry.Instance{Service: "svc-rt", IP: "10.0.0.1", Port: 8080}
-	if err := r.Register(context.Background(), inst); err != nil {
-		t.Fatalf("Register: %v", err)
+	if regErr := r.Register(context.Background(), inst); regErr != nil {
+		t.Fatalf("Register: %v", regErr)
 	}
 	if persistedClusterName != "gray" {
 		t.Fatalf("Register did not persist ClusterName: got %q, want gray", persistedClusterName)
@@ -383,8 +384,8 @@ func TestClusterRoundTrip(t *testing.T) {
 
 	// inst.Cluster 非空覆盖 Registrar 默认值的写侧行为也一并钉住。
 	persistedClusterName = ""
-	if err := r.Register(context.Background(), registry.Instance{Service: "svc-rt", IP: "10.0.0.2", Port: 8081, Cluster: "unit-b"}); err != nil {
-		t.Fatalf("Register with inst.Cluster: %v", err)
+	if regErr := r.Register(context.Background(), registry.Instance{Service: "svc-rt", IP: "10.0.0.2", Port: 8081, Cluster: "unit-b"}); regErr != nil {
+		t.Fatalf("Register with inst.Cluster: %v", regErr)
 	}
 	if persistedClusterName != "unit-b" {
 		t.Errorf("inst.Cluster override not written: got %q, want unit-b", persistedClusterName)
@@ -833,6 +834,257 @@ func indexOfSub(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// captureSubscribeCallbacks 从 stub 的 subscribeFunc 里按服务名收集注册的
+// 推送回调，测试用 (*cb)(nil, err) 模拟 SDK 推送。
+func captureSubscribeCallbacks(stub *stubNamingClient) func(service string) *func([]model.Instance, error) {
+	var mu sync.Mutex
+	cbs := make(map[string][]*func([]model.Instance, error))
+	stub.subscribeFunc = func(p *vo.SubscribeParam) error {
+		mu.Lock()
+		defer mu.Unlock()
+		cbs[p.ServiceName] = append(cbs[p.ServiceName], &p.SubscribeCallback)
+		return nil
+	}
+	return func(service string) *func([]model.Instance, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if got := cbs[service]; len(got) > 0 {
+			return got[0]
+		}
+		return nil
+	}
+}
+
+// --- #142 回归钉（LastErr 按服务分账）---
+
+// TestSubscriber_LastErr_PerServiceIsolation 是 #142 的核心回归钉：服务 A
+// 推送失败置位后，服务 B 的成功推送**不得**清掉 A 的账——此前 lastErr 是
+// Subscriber 全局单值，A 的陈旧视图被 B 的一次成功推送伪装成「健康」。
+func TestSubscriber_LastErr_PerServiceIsolation(t *testing.T) {
+	stub := &stubNamingClient{}
+	cbOf := captureSubscribeCallbacks(stub)
+	s, err := NewSubscriber(stub)
+	if err != nil {
+		t.Fatalf("NewSubscriber: %v", err)
+	}
+	for _, svc := range []string{"svc-a", "svc-b"} {
+		if err := s.Subscribe(context.Background(), svc, func([]registry.Instance) {}); err != nil {
+			t.Fatalf("Subscribe %s: %v", svc, err)
+		}
+	}
+
+	// A 推送失败、B 推送成功：A 必须仍报「视图可能过期」，B 必须新鲜。
+	if cb := cbOf("svc-a"); cb == nil {
+		t.Fatal("svc-a callback not captured")
+	} else {
+		(*cb)(nil, errors.New("push A failed"))
+	}
+	if cb := cbOf("svc-b"); cb == nil {
+		t.Fatal("svc-b callback not captured")
+	} else {
+		(*cb)(nil, nil)
+	}
+
+	errA := s.LastErrFor("svc-a")
+	if errA == nil || !strings.Contains(errA.Error(), "svc-a") || !strings.Contains(errA.Error(), "push A failed") {
+		t.Fatalf("LastErrFor(svc-a) = %v, want error mentioning svc-a/push A failed", errA)
+	}
+	if errB := s.LastErrFor("svc-b"); errB != nil {
+		t.Fatalf("LastErrFor(svc-b) = %v, want nil（B 的成功不得受 A 的失败影响）", errB)
+	}
+	agg := s.LastErr()
+	if agg == nil || !strings.Contains(agg.Error(), "svc-a") {
+		t.Fatalf("LastErr() = %v, want aggregate mentioning svc-a", agg)
+	}
+
+	// A 自己的下一次成功推送清 A 自己的账。
+	if cb := cbOf("svc-a"); cb != nil {
+		(*cb)(nil, nil)
+	}
+	if errA := s.LastErrFor("svc-a"); errA != nil {
+		t.Fatalf("LastErrFor(svc-a) after own success = %v, want nil", errA)
+	}
+	if agg := s.LastErr(); agg != nil {
+		t.Fatalf("LastErr() after all services fresh = %v, want nil", agg)
+	}
+}
+
+// TestSubscriber_LastErr_AggregateJoinsServices 钉住聚合面：多个服务同时
+// 失败时 LastErr() 聚合全部（errors.Join），且按服务名字典序确定输出。
+func TestSubscriber_LastErr_AggregateJoinsServices(t *testing.T) {
+	stub := &stubNamingClient{}
+	cbOf := captureSubscribeCallbacks(stub)
+	s, _ := NewSubscriber(stub)
+	for _, svc := range []string{"svc-a", "svc-b"} {
+		if err := s.Subscribe(context.Background(), svc, func([]registry.Instance) {}); err != nil {
+			t.Fatalf("Subscribe %s: %v", svc, err)
+		}
+	}
+	if cb := cbOf("svc-a"); cb != nil {
+		(*cb)(nil, errors.New("boom-a"))
+	}
+	if cb := cbOf("svc-b"); cb != nil {
+		(*cb)(nil, errors.New("boom-b"))
+	}
+	agg := s.LastErr()
+	if agg == nil {
+		t.Fatal("LastErr() = nil, want aggregate of both failures")
+	}
+	ia, ib := strings.Index(agg.Error(), "svc-a"), strings.Index(agg.Error(), "svc-b")
+	if ia < 0 || ib < 0 {
+		t.Fatalf("LastErr() = %v, want both svc-a and svc-b mentioned", agg)
+	}
+	if ia > ib {
+		t.Errorf("LastErr() 输出顺序不稳定：want svc-a before svc-b（字典序）, got %v", agg)
+	}
+}
+
+// TestSubscriber_LastErr_ClearedOnUnsubscribe 钉住退订清账：全部退订成功后
+// 该服务的错误账目必须移除（否则 unclean 推送留下的错误在聚合面永久滞留，
+// 健康检查对已退订服务误报「视图过期」，#142）；退订失败（订阅仍在）则保留。
+func TestSubscriber_LastErr_ClearedOnUnsubscribe(t *testing.T) {
+	stub := &stubNamingClient{}
+	cbOf := captureSubscribeCallbacks(stub)
+	s, _ := NewSubscriber(stub)
+	if err := s.Subscribe(context.Background(), "svc-a", func([]registry.Instance) {}); err != nil {
+		t.Fatalf("Subscribe svc-a: %v", err)
+	}
+	if err := s.Subscribe(context.Background(), "svc-b", func([]registry.Instance) {}); err != nil {
+		t.Fatalf("Subscribe svc-b: %v", err)
+	}
+	if cb := cbOf("svc-a"); cb != nil {
+		(*cb)(nil, errors.New("boom-a"))
+	}
+	if cb := cbOf("svc-b"); cb != nil {
+		(*cb)(nil, errors.New("boom-b"))
+	}
+
+	// svc-a 退订成功 ⇒ 清账。
+	if err := s.Unsubscribe(context.Background(), "svc-a"); err != nil {
+		t.Fatalf("Unsubscribe svc-a: %v", err)
+	}
+	if err := s.LastErrFor("svc-a"); err != nil {
+		t.Fatalf("LastErrFor(svc-a) after unsubscribe = %v, want nil", err)
+	}
+	// svc-b 退订失败（订阅仍在）⇒ 保留账目。
+	stub.unsubscribeFunc = func(*vo.SubscribeParam) error { return errors.New("nacos unavailable") }
+	if err := s.Unsubscribe(context.Background(), "svc-b"); err == nil {
+		t.Fatal("expected Unsubscribe svc-b error, got nil")
+	}
+	if err := s.LastErrFor("svc-b"); err == nil {
+		t.Fatal("LastErrFor(svc-b) after failed unsubscribe = nil, want retained error")
+	}
+}
+
+// --- #143 回归钉（ConfigStore 的 ctx 纪律）---
+
+// TestConfigStore_GetConfig_PreCanceledCtx：预取消的 ctx 必须快速失败且不
+// 发起 SDK 调用——此前 ctx 被完全忽略，消费方（nns 逐服务串行拉配置）的
+// 取消/超时预算对 config 路径无效（#143）。
+func TestConfigStore_GetConfig_PreCanceledCtx(t *testing.T) {
+	called := make(chan vo.ConfigParam, 1)
+	stub := &stubConfigClient{
+		getConfigFunc: func(p vo.ConfigParam) (string, error) {
+			called <- p
+			return "v", nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := cs.GetConfig(ctx, "k", "G"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetConfig with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case p := <-called:
+		t.Fatalf("SDK GetConfig must not be called, got call for %q", p.DataId)
+	default:
+	}
+}
+
+// TestConfigStore_GetConfig_CancelDuringSDKCall：SDK 调用进行中 ctx 取消必须
+// 立即返回（与 Registrar/Discoverer 的 #65 竞速语义同款，#143）。
+func TestConfigStore_GetConfig_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubConfigClient{
+		getConfigFunc: func(_ vo.ConfigParam) (string, error) {
+			close(entered)
+			<-release // 模拟 SDK 内部阻塞
+			return "v", nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := cs.GetConfig(ctx, "k", "G")
+		errCh <- err
+	}()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GetConfig after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GetConfig blocked on SDK call after ctx cancel")
+	}
+	close(release) // 放行后台 SDK 调用，goroutine 不泄漏
+}
+
+// TestConfigStore_StopListenConfig_PreCanceledCtx：同款覆盖 StopListenConfig。
+func TestConfigStore_StopListenConfig_PreCanceledCtx(t *testing.T) {
+	called := make(chan vo.ConfigParam, 1)
+	stub := &stubConfigClient{
+		cancelListenConfigFunc: func(p vo.ConfigParam) error {
+			called <- p
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := cs.StopListenConfig(ctx, "k", "G"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("StopListenConfig with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case p := <-called:
+		t.Fatalf("SDK CancelListenConfig must not be called, got call for %q", p.DataId)
+	default:
+	}
+}
+
+// TestConfigStore_ListenConfig_PreCanceledCtx：ListenConfig 注册本身做进入前
+// 预检（#143）——ctx 已取消时不发起 SDK 注册，onChange 不受 ctx 管理（取消
+// 靠 StopListenConfig，godoc 钉明）。
+func TestConfigStore_ListenConfig_PreCanceledCtx(t *testing.T) {
+	called := make(chan vo.ConfigParam, 1)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			called <- p
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := cs.ListenConfig(ctx, "k", "G", func(string) {}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListenConfig with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case p := <-called:
+		t.Fatalf("SDK ListenConfig must not be called, got call for %q", p.DataId)
+	default:
+	}
 }
 
 // --- #95/#96 回归钉（订阅指针身份 + 回调 panic 隔离）---

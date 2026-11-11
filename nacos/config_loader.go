@@ -15,7 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var log = logx.Delegating("nacos")
+var log = logx.Delegating("registry/nacos")
 
 // LoadAndMerge 从 Nacos 拉取远程配置并与本地配置进行覆盖式合并。
 func LoadAndMerge[T any](client config_client.IConfigClient, cfg Bootstrap, local *T) error {

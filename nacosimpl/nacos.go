@@ -3,14 +3,14 @@ package nacos
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
-	"github.com/oekit/core/network"
 	"github.com/oekit/logx"
 	"github.com/oekit/registry"
 )
 
-var log = logx.Delegating("registry/nacos")
+var log = logx.Delegating("registry/nacosimpl")
 
 // toInstance 将 Nacos SDK 的 model.Instance 转换为 provider 无关的 registry.Instance。
 // metadata 做深拷贝：SDK 会在推送更新时原地修改内部实例对象，共享 map
@@ -38,14 +38,7 @@ func toInstance(serviceName string, m model.Instance) registry.Instance {
 
 // copyMetadata 返回 metadata 的浅层拷贝（值为 string，一层即深拷贝）；nil 透传 nil。
 func copyMetadata(src map[string]string) map[string]string {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
+	return maps.Clone(src)
 }
 
 // toInstances 批量转换。
@@ -55,25 +48,6 @@ func toInstances(serviceName string, src []model.Instance) []registry.Instance {
 		result = append(result, toInstance(serviceName, m))
 	}
 	return result
-}
-
-// GetPodIP 获取本机 IP 地址。
-//
-// 优先读取 POD_IP 环境变量（Kubernetes 中通过 downward API 注入），
-// 其次遍历网卡获取第一个非回环 IPv4 地址，最后回退到 127.0.0.1。
-//
-// 用于服务注册时自动探测本机 IP：
-//
-//	ip := nacosimpl.GetPodIP()
-//	reg.Register(ctx, registry.Instance{Service: "my-svc", IP: ip, Port: 8080})
-//
-// 注意（#64）：失败回退 127.0.0.1 意味着实例会以回环地址注册——其他节点
-// 永远拨不通。注册路径应优先走 registry.ParseAddr / registry.InfoFrom
-// （对回环结果 fail-closed 返回 [registry.ErrLoopbackAddr]）；直接使用本函数
-// 的调用方需自行校验回退结果。回退前的 ERROR 日志在 core 仓
-// network.GetPodIP 本体处理（oekit#141 跟进）。
-func GetPodIP() string {
-	return network.GetPodIP()
 }
 
 // wrapErr 包装错误并附带 Nacos 上下文信息。
@@ -124,4 +98,14 @@ func invokeWithCtx[T any](ctx context.Context, fn func() (T, error)) (T, error) 
 	case <-ctx.Done():
 		return zero, ctx.Err()
 	}
+}
+
+// invokeWithCtxErr 是 [invokeWithCtx] 的 error-only 便捷变体：SDK 调用只返回
+// error（如 CancelListenConfig）时免去 struct{} 占位类型。语义与 invokeWithCtx
+// 完全一致（预取消快速失败 / 竞速 / panic 转 error，#143）。
+func invokeWithCtxErr(ctx context.Context, fn func() error) error {
+	_, err := invokeWithCtx(ctx, func() (struct{}, error) {
+		return struct{}{}, fn()
+	})
+	return err
 }

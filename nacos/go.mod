@@ -12,7 +12,7 @@ go 1.26.0
 // 隔离方向是「父←子」：只 import 父仓的消费者不会拉进本模块的重依赖。
 require (
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6
-	github.com/oekit/core v0.15.0
+	github.com/oekit/core v0.15.1
 	github.com/oekit/logx v0.10.0
 	gopkg.in/yaml.v3 v3.0.1
 )

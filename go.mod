@@ -12,4 +12,5 @@ go 1.26.0
 // 不隔离时，**只想要注册发现接口**的消费方也会被连带拖进去。
 require github.com/oekit/core v0.15.2
 
-require github.com/oekit/pkg v0.47.1 // indirect
+// registrymocks 直接消费 pkg/errors.Recovered（#158 panic 收编单源）⇒ pkg 转直接依赖。
+require github.com/oekit/pkg v0.47.1

@@ -862,6 +862,12 @@ func captureSubscribeCallbacks(stub *stubNamingClient) func(service string) *fun
 // TestSubscriber_LastErr_PerServiceIsolation 是 #142 的核心回归钉：服务 A
 // 推送失败置位后，服务 B 的成功推送**不得**清掉 A 的账——此前 lastErr 是
 // Subscriber 全局单值，A 的陈旧视图被 B 的一次成功推送伪装成「健康」。
+//
+// ⚠️ 覆盖面说明（#161）：本钉（与下一条聚合钉）用测试桩手动造非 nil err，
+// 只覆盖**账本逻辑**（分账/聚合/清账），不覆盖**送达面**——钉死的
+// nacos-sdk-go v2.3.6 生产路径对回调恒传 err=nil（唯一调用点 subscribe_
+// callback_wrapper.go:59），账本在真实 SDK 上不会被置位；「视图过期」的
+// 真实可达信号源见 TestSubscriber_LastPushFor_RealSignalSource。
 func TestSubscriber_LastErr_PerServiceIsolation(t *testing.T) {
 	stub := &stubNamingClient{}
 	cbOf := captureSubscribeCallbacks(stub)
@@ -938,6 +944,62 @@ func TestSubscriber_LastErr_AggregateJoinsServices(t *testing.T) {
 	}
 	if ia > ib {
 		t.Errorf("LastErr() 输出顺序不稳定：want svc-a before svc-b（字典序）, got %v", agg)
+	}
+}
+
+// TestSubscriber_LastPushFor_RealSignalSource 回归钉（#161）：LastPushFor 是
+// 「视图过期」在钉死 SDK（v2.3.6）上唯一可达的真实信号源——成功回调记时刻、
+// 错误回调不记（推送没成功，视图仍是旧的）、退订清账、从未推送报 false。
+func TestSubscriber_LastPushFor_RealSignalSource(t *testing.T) {
+	stub := &stubNamingClient{}
+	cbOf := captureSubscribeCallbacks(stub)
+	s, _ := NewSubscriber(stub)
+	if err := s.Subscribe(context.Background(), "svc-a", func([]registry.Instance) {}); err != nil {
+		t.Fatalf("Subscribe svc-a: %v", err)
+	}
+
+	// 从未成功推送：false。
+	if _, ok := s.LastPushFor("svc-a"); ok {
+		t.Fatal("★ 从未推送时 LastPushFor 必须报 false")
+	}
+
+	// 错误回调（测试桩造数）：err 账目置位，但推送时刻**不得**记录——
+	// 推送没成功，视图仍是旧的（#161 语义：只记成功回调时刻）。
+	if cb := cbOf("svc-a"); cb == nil {
+		t.Fatal("svc-a callback not captured")
+	} else {
+		(*cb)(nil, errors.New("push failed"))
+	}
+	if errA := s.LastErrFor("svc-a"); errA == nil {
+		t.Fatal("错误回调必须置 err 账目（账本逻辑面）")
+	}
+	if _, ok := s.LastPushFor("svc-a"); ok {
+		t.Fatal("★ 错误回调不得记录推送时刻（视图仍是旧的，#161）")
+	}
+
+	// 成功回调：时刻记录（真实可达信号）。
+	before := time.Now()
+	if cb := cbOf("svc-a"); cb != nil {
+		(*cb)(nil, nil)
+	}
+	ts, ok := s.LastPushFor("svc-a")
+	if !ok {
+		t.Fatal("★ 成功回调后 LastPushFor 必须报 true")
+	}
+	if ts.Before(before) || ts.After(time.Now()) {
+		t.Fatalf("★ 记录的时刻必须落在本次回调附近: %v", ts)
+	}
+	// 成功推送同时清 err 账目（#142 原语义不回退）。
+	if errA := s.LastErrFor("svc-a"); errA != nil {
+		t.Fatalf("成功推送必须清 err 账目: %v", errA)
+	}
+
+	// 退订清账（与 lastErrs 同口径）：LastPushFor 不再报「曾经推送过」。
+	if err := s.Unsubscribe(context.Background(), "svc-a"); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	if _, ok := s.LastPushFor("svc-a"); ok {
+		t.Fatal("★ 退订后 LastPushFor 必须报 false（#161 时刻账目同步清）")
 	}
 }
 

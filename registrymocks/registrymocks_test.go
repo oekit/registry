@@ -80,3 +80,75 @@ func TestConfigStore_FireChange(t *testing.T) {
 		t.Errorf("received = %q, want %q", received, "new-value")
 	}
 }
+
+// #150 回归：ConfigStore/Subscriber 零值（结构体字面量构造）必须可用——
+// 此前字面量构造后在 ListenConfig/Subscribe 写 nil map 直接 panic
+// （assignment to entry in nil map，报错不指向 registrymocks，崩的是整个
+// 测试二进制），与包文档「不留 panic 默认」的承诺冲突。
+func TestMocksZeroValueUsable(t *testing.T) {
+	ctx := context.Background()
+
+	// 与包内 Registrar 文档给出的字面量用法示例同形态
+	cs := &ConfigStore{}
+	got := ""
+	if err := cs.ListenConfig(ctx, "d", "g", func(s string) { got = s }); err != nil {
+		t.Fatalf("zero-value ListenConfig: %v", err)
+	}
+	if err := cs.StopListenConfig(ctx, "d", "g"); err != nil {
+		t.Fatalf("zero-value StopListenConfig: %v", err)
+	}
+	if cs.ListeningCountFor("d", "g") != 0 {
+		t.Error("expected 0 listener after stop")
+	}
+	// 重复 ListenConfig 后 FireChange 正常投递（惰性初始化的 map 可用）
+	if err := cs.ListenConfig(ctx, "d", "g", func(s string) { got = s }); err != nil {
+		t.Fatalf("second ListenConfig: %v", err)
+	}
+	cs.FireChange("d", "g", "v")
+	if got != "v" {
+		t.Errorf("FireChange delivered %q, want %q", got, "v")
+	}
+
+	sub := &Subscriber{}
+	if err := sub.Subscribe(ctx, "svc", func([]registry.Instance) {}); err != nil {
+		t.Fatalf("zero-value Subscribe: %v", err)
+	}
+	if err := sub.Unsubscribe(ctx, "svc"); err != nil {
+		t.Fatalf("zero-value Unsubscribe: %v", err)
+	}
+	// Push/CallbackCount 对 nil map 只读，本就安全——一并钉住
+	sub.Push("svc", nil)
+	if sub.CallbackCount("svc") != 0 {
+		t.Error("expected 0 callbacks after unsubscribe")
+	}
+}
+
+// #151 回归：SetErr 必须同时作用于 GetConfig 与 ListenConfig——此前实现
+// 只作用于 GetConfig，用 SetErr 模拟「配置中心不可用」的故障注入用例拿到
+// 假绿：监听注册照样成功返回 nil，实际监听已挂上、配置变更照常投递。
+func TestConfigStoreSetErrAffectsListenConfig(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("config center down")
+	cs := NewConfigStore()
+	cs.SetErr(boom)
+
+	if _, err := cs.GetConfig(ctx, "d", "g"); !errors.Is(err, boom) {
+		t.Fatalf("GetConfig err = %v; want config center down", err)
+	}
+	if err := cs.ListenConfig(ctx, "d", "g", func(string) {}); !errors.Is(err, boom) {
+		t.Fatalf("ListenConfig err = %v; want config center down（#151：SetErr 同时作用于 ListenConfig）", err)
+	}
+	// 故障期间监听不得登记（假绿根源：用例以为注册失败，实际监听挂上了）
+	if cs.ListeningCountFor("d", "g") != 0 {
+		t.Error("listener registered during injected fault; want none（#151）")
+	}
+
+	// SetErr(nil) 恢复：GetConfig 正常返回、ListenConfig 正常登记
+	cs.SetErr(nil)
+	if err := cs.ListenConfig(ctx, "d", "g", func(string) {}); err != nil {
+		t.Fatalf("ListenConfig after recovery: %v", err)
+	}
+	if cs.ListeningCountFor("d", "g") != 1 {
+		t.Error("expected 1 listener after recovery")
+	}
+}

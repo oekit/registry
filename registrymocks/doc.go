@@ -8,4 +8,7 @@
 //   - 字段可配置：每个 mock 暴露必要的字段（错误、返回值）用于测试用例
 //   - 线程安全：所有方法都加锁，支持并发测试场景
 //   - 完整实现：覆盖接口的所有方法（不留 panic 默认）
+//   - 零值可用（#150）：结构体字面量构造（&Xxx{Err: ...}）后各方法可直接
+//     调用——内部 map 字段在首次写入时惰性初始化，不会出现
+//     「assignment to entry in nil map」这种不指向本包的 runtime panic
 package registrymocks

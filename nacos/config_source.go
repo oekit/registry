@@ -83,7 +83,7 @@ func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error("config change callback panicked (isolated)",
-						"dataId", dataId, "err", r, "stack", string(debug.Stack()))
+						"dataId", dataId, logx.ErrKey, r, "stack", string(debug.Stack()))
 				}
 			}()
 			select {
@@ -96,7 +96,7 @@ func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 		},
 	})
 	if err != nil {
-		log.Error("listen config failed", "dataId", s.cfg.DataId, "err", err)
+		log.Error("listen config failed", "dataId", s.cfg.DataId, logx.ErrKey, err)
 		s.listenErr.Store(&err)
 		return
 	}

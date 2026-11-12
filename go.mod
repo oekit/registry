@@ -10,6 +10,6 @@ go 1.26.0
 //
 // 拆分的理由（实测）：nacos-sdk-go/v2 单独引入即拖进 63 个第三方模块；
 // 不隔离时，**只想要注册发现接口**的消费方也会被连带拖进去。
-require github.com/oekit/core v0.15.0
+require github.com/oekit/core v0.15.1
 
 require github.com/oekit/pkg v0.47.0 // indirect

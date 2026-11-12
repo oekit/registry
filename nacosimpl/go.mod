@@ -16,7 +16,7 @@ go 1.26.0
 // v0.5.0 起该目录已随嵌套模块移出 registry 仓。
 require (
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6
-	github.com/oekit/core v0.14.2 // indirect
+	github.com/oekit/core v0.15.0 // indirect
 	github.com/oekit/logx v0.10.0
 	github.com/oekit/registry v0.5.15
 )
@@ -55,6 +55,7 @@ require (
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/oekit/pkg v0.46.0 // indirect
 	github.com/orcaman/concurrent-map v0.0.0-20210501183033-44dafcb38ecc // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.12.2 // indirect
@@ -68,7 +69,7 @@ require (
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/time v0.1.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240814211410-ddb44dafa142 // indirect

@@ -125,7 +125,7 @@ func preserveNacosBootstrap[T any](cfg *T, bootstrap Bootstrap) {
 	if val.Kind() != reflect.Struct {
 		return
 	}
-	for i := 0; i < val.NumField(); i++ {
+	for i := range val.NumField() {
 		field := val.Field(i)
 		if field.Type() == reflect.TypeOf(Bootstrap{}) && field.CanSet() {
 			field.Set(reflect.ValueOf(bootstrap))

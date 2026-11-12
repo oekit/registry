@@ -1,4 +1,4 @@
-github.com/oekit/core v0.15.1 h1:751xcJsQ6tfjfEn45ipx+8gLHVaLK57K62UoibBc90g=
-github.com/oekit/core v0.15.1/go.mod h1:jGHyFBdGzti64oBgjF1wLsXnrzjSUdHvYzLxxssKJqc=
-github.com/oekit/pkg v0.47.0 h1:f1FqRG2CCpzPQnOxvFtgwGsTNmEjbOsGg/2NppyQMqg=
-github.com/oekit/pkg v0.47.0/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=
+github.com/oekit/core v0.15.2 h1:UJ/KK3m1Y22Af/uI225FoICbnPeQzw76QZAfRxZbLOw=
+github.com/oekit/core v0.15.2/go.mod h1:GjsBFSUu4HY+BAbuOmwMCLoWdh3xvHZZCUmmZT7nOvc=
+github.com/oekit/pkg v0.47.1 h1:wZfDyJAhPEwEwUdweoD/KdrNRNYID3qgeblisFjEdU8=
+github.com/oekit/pkg v0.47.1/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=

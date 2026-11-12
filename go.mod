@@ -12,4 +12,4 @@ go 1.26.0
 // 不隔离时，**只想要注册发现接口**的消费方也会被连带拖进去。
 require github.com/oekit/core v0.15.0
 
-require github.com/oekit/pkg v0.46.0 // indirect
+require github.com/oekit/pkg v0.47.0 // indirect

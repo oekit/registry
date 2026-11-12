@@ -1,3 +1,7 @@
+## [v0.5.16] — 2026-11-13
+
+- Go 1.26 现代化（nacos 嵌套 range N）+ 依赖地板对齐 concurrency v0.34.1。
+
 ## [nacosimpl/v0.2.0] — 2026-11-12
 
 - **BREAKING**（nacosimpl v0.2.0，0.x minor）删 nacosimpl.GetPodIP 纯转发零调用导出（registry#139）——全仓零引用，注册地址改走 registry.ParseAddr / registry.InfoFrom（回环/非法地址 fail-closed），nacos/doc.go 注册示例同步改写

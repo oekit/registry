@@ -12,6 +12,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
+	"github.com/oekit/logx"
 	"github.com/oekit/registry"
 )
 
@@ -133,7 +134,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, serviceName string, cb func(
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error("subscribe callback panicked (isolated)",
-						"service", serviceName, "err", r, "stack", string(debug.Stack()))
+						"service", serviceName, logx.ErrKey, r, "stack", string(debug.Stack()))
 				}
 			}()
 			if err != nil {
@@ -144,7 +145,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, serviceName string, cb func(
 				// 暴露「视图过期」。按服务分账（#142）：A 的失败只记 A 的账，
 				// 不被 B 的成功推送冲掉。
 				log.Error("subscribe callback error (cached view may be stale until next push)",
-					"service", serviceName, "err", err)
+					"service", serviceName, logx.ErrKey, err)
 				s.mu.Lock()
 				s.lastErrs[serviceName] = fmt.Errorf("nacosimpl: subscribe push for %s: %w", serviceName, err)
 				s.mu.Unlock()

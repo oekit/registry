@@ -7,6 +7,7 @@ import (
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
+	"github.com/oekit/logx"
 	"github.com/oekit/registry"
 )
 
@@ -81,7 +82,7 @@ func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, on
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error("config change callback panicked (isolated)",
-						"dataId", dataID, "err", r, "stack", string(debug.Stack()))
+						"dataId", dataID, logx.ErrKey, r, "stack", string(debug.Stack()))
 				}
 			}()
 			log.Info("config changed", "dataId", dataID)

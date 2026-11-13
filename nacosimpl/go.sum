@@ -242,10 +242,10 @@ github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e h1:fD57ERR4JtEqsWb
 github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e/go.mod h1:zD1mROLANZcx1PVRCS0qkT7pwLkGfwJo4zjcN/Tysno=
 github.com/oekit/core v0.15.2 h1:UJ/KK3m1Y22Af/uI225FoICbnPeQzw76QZAfRxZbLOw=
 github.com/oekit/core v0.15.2/go.mod h1:GjsBFSUu4HY+BAbuOmwMCLoWdh3xvHZZCUmmZT7nOvc=
-github.com/oekit/logx v0.10.0 h1:swoa1h9oLMdoH6LVjHaTYFIlVSxwRlfV0lBMNmKFfLI=
-github.com/oekit/logx v0.10.0/go.mod h1:hGifsM8pfOb8cR4KSmJE2j2oy3Q9KLEwKcfAgj+M/yY=
-github.com/oekit/pkg v0.47.1 h1:wZfDyJAhPEwEwUdweoD/KdrNRNYID3qgeblisFjEdU8=
-github.com/oekit/pkg v0.47.1/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=
+github.com/oekit/logx v0.11.0 h1:dlDDIqs04ibDJ7HJg1O0gd/gXUbirFc4WPHgjQV5N/w=
+github.com/oekit/logx v0.11.0/go.mod h1:aIxiaegg9jzyvXhGXNcjq7ljAdVC2ERUCHqGN+thui0=
+github.com/oekit/pkg v0.48.0 h1:3j1j8ZyAxX7B4i41Gf0IEHHaTXjC+WAxEYXhW+ZkC+g=
+github.com/oekit/pkg v0.48.0/go.mod h1:Cr6sJpBX2a0gAIgLa32+NY69h/UZtuN6L1ZdXtP9upo=
 github.com/orcaman/concurrent-map v0.0.0-20210501183033-44dafcb38ecc h1:Ak86L+yDSOzKFa7WM5bf5itSOo1e3Xh8bm5YCMUXIjQ=
 github.com/orcaman/concurrent-map v0.0.0-20210501183033-44dafcb38ecc/go.mod h1:Lu3tH6HLW3feq74c2GC+jIMS/K2CFcDWnWD9XkenwhI=
 github.com/pkg/errors v0.8.0/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=

@@ -13,4 +13,4 @@ go 1.26.0
 require github.com/oekit/core v0.15.2
 
 // registrymocks 直接消费 pkg/errors.Recovered（#158 panic 收编单源）⇒ pkg 转直接依赖。
-require github.com/oekit/pkg v0.47.1
+require github.com/oekit/pkg v0.48.0

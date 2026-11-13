@@ -1,3 +1,21 @@
+## [nacosimpl/v0.3.0] — 2026-11-13
+
+- feat(configbridge): 新增多播桥子包——nacos-sdk ListenConfig 单槽语义抬升为多播（#177 P1）。同 (dataID, group) 重复注册新回调静默失效、Cancel 按 key 整删互杀的两处病灶闭合：按 client 身份共享表、底层只注册一次、句柄独立摘除、最后一个订阅者离开才 Cancel；per-key 派发锁 + 逐订阅 panic 隔离。nacosimpl ConfigStore（句柄栈 LIFO 适配无句柄接口，与 etcdx 替换语义同向）、nacos config_source（ctx 按句柄摘除）、config_loader（背压只拖本 key）三处接入。行为变更：无订阅 Stop 从无条件调 SDK Cancel 改为幂等 no-op。
+
+关联问题单：registry#177。
+
+## [nacos/v0.2.0] — 2026-11-13
+
+- feat(configbridge): 新增多播桥子包——nacos-sdk ListenConfig 单槽语义抬升为多播（#177 P1）。同 (dataID, group) 重复注册新回调静默失效、Cancel 按 key 整删互杀的两处病灶闭合：按 client 身份共享表、底层只注册一次、句柄独立摘除、最后一个订阅者离开才 Cancel；per-key 派发锁 + 逐订阅 panic 隔离。nacosimpl ConfigStore（句柄栈 LIFO 适配无句柄接口，与 etcdx 替换语义同向）、nacos config_source（ctx 按句柄摘除）、config_loader（背压只拖本 key）三处接入。行为变更：无订阅 Stop 从无条件调 SDK Cancel 改为幂等 no-op。
+
+关联问题单：registry#177。
+
+## [v0.6.0] — 2026-11-13
+
+- feat(configbridge): 新增多播桥子包——nacos-sdk ListenConfig 单槽语义抬升为多播（#177 P1）。同 (dataID, group) 重复注册新回调静默失效、Cancel 按 key 整删互杀的两处病灶闭合：按 client 身份共享表、底层只注册一次、句柄独立摘除、最后一个订阅者离开才 Cancel；per-key 派发锁 + 逐订阅 panic 隔离。nacosimpl ConfigStore（句柄栈 LIFO 适配无句柄接口，与 etcdx 替换语义同向）、nacos config_source（ctx 按句柄摘除）、config_loader（背压只拖本 key）三处接入。行为变更：无订阅 Stop 从无条件调 SDK Cancel 改为幂等 no-op。
+
+关联问题单：registry#177。
+
 ## [nacosimpl/v0.2.1] — 2026-11-13
 
 - fix: 第六轮 sweep 五单——netutil.ParseAddr host 可路由性判据补齐（link-local/multicast/broadcast/this-network fail-closed + 未指定地址语义判定，#157）、registrymocks SPI 契约落地（FireChange/Push 串行投递 + panic 就地收编，#158）、DiscoverAll 按服务名取值（per-service 覆盖与故障注入对全量视图生效，#159）、mocks 锁内注入口 SetXxx 补齐（#160）、nacosimpl Subscriber 送达面修口（LastErr godoc 写明钉死 SDK 恒 nil + LastPushFor 真实信号源，#161）

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -386,5 +387,75 @@ func TestListen_EventsDeliveredInArrivalOrder(t *testing.T) {
 		if v != i+1 {
 			t.Fatalf("投递序 = %v; want [1..%d]（到达序 FIFO，#146）", got, n)
 		}
+	}
+}
+
+// —— registry#177：config_loader 与 config_source 跨构造同 key 共存 ——
+
+// TestLoaderAndSource_ShareBridgeSameKey 钉住 #177 证据 1 的 nacos 包场景：
+// config_loader 与 config_source 各自直调 SDK ListenConfig 时，同 key 第二次
+// 注册被 SDK 静默丢弃（只有先注册者收到）；任一取消（source 的 ctx 收尾走
+// CancelListenConfig）按 key 整删，幸存者静默失联。
+// 经 configbridge 桥后：底层只注册一次、两构造的回调全部收到、source
+// ctx 取消只摘自己，loader 继续热更。
+func TestLoaderAndSource_ShareBridgeSameKey(t *testing.T) {
+	var sdkOnChanges []func(namespace, group, dataId, data string)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			sdkOnChanges = append(sdkOnChanges, p.OnChange)
+			return nil
+		},
+		cancelListenConfigFunc: func(_ vo.ConfigParam) error { return nil },
+	}
+	cfg := Bootstrap{DataId: "app.yaml", Group: "G"}
+
+	// loader 先注册（热更路径）。断言回调**次数**而非合并值——
+	// OverlayMerge 的覆盖语义不属本测试面（#177 钉的是收没收到）。
+	var loaderGot atomic.Int32
+	if err := Listen(stub, cfg, &hotCfg{N: 1}, func(*hotCfg) {
+		loaderGot.Add(1)
+	}); err != nil {
+		t.Fatalf("loader Listen: %v", err)
+	}
+
+	// source 同 key 注册（此前被 SDK 静默丢弃）。
+	src := NewConfigSource(stub, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var srcGot atomic.Int32
+	src.Watch(ctx, func() { srcGot.Add(1) })
+	if err := src.Err(); err != nil {
+		t.Fatalf("source Watch: %v", err)
+	}
+	if len(sdkOnChanges) != 1 {
+		t.Fatalf("★ 跨构造同 key 应共享底层注册（SDK 单槽只注册一次）, got %d", len(sdkOnChanges))
+	}
+
+	// 一次推送：两构造都收到（此前只有 loader 收到）。
+	sdkOnChanges[0]("ns", "G", "app.yaml", `{"N":2}`)
+	if srcGot.Load() != 1 {
+		t.Fatalf("★ source 应收到推送（此前被静默丢弃）, got %d", srcGot.Load())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for loaderGot.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("★ loader 应收到推送（此前的静默丢回调回归）")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// source ctx 取消：只摘 source，loader 继续热更（互杀回归）。
+	cancel()
+	time.Sleep(100 * time.Millisecond) // 收尾 goroutine 异步摘除
+	sdkOnChanges[0]("ns", "G", "app.yaml", `{"N":3}`)
+	if got := srcGot.Load(); got != 1 {
+		t.Fatalf("★ source 取消后不应再收到, got %d", got)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for loaderGot.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("★ source 取消后 loader 仍应热更（按 key 互杀回归）")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

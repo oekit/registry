@@ -17,7 +17,10 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/oekit/concurrency v0.35.0
+require (
+	github.com/oekit/concurrency v0.35.1
+	github.com/oekit/registry v0.6.0
+)
 
 require (
 	github.com/alibabacloud-go/alibabacloud-gateway-pop v0.0.6 // indirect
@@ -76,3 +79,5 @@ require (
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 )
+
+replace github.com/oekit/registry => ../

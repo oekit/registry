@@ -3,7 +3,10 @@ package registrymocks
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/oekit/registry"
 )
@@ -150,5 +153,230 @@ func TestConfigStoreSetErrAffectsListenConfig(t *testing.T) {
 	}
 	if cs.ListeningCountFor("d", "g") != 1 {
 		t.Error("expected 1 listener after recovery")
+	}
+}
+
+// —— #158/#159/#160 契约回归钉 ——
+
+// TestConfigStore_FireChange_PanicIsolated 回归钉（#158，SPI 契约）：onChange
+// panic 必须就地收编——不逃逸到 FireChange 调用方（无 recover 的真实测试
+// 二进制里会终止整个测试进程），且后续推送照常投递。
+func TestConfigStore_FireChange_PanicIsolated(t *testing.T) {
+	m := NewConfigStore()
+	var delivered []string
+	if err := m.ListenConfig(context.Background(), "app", "DEFAULT_GROUP", func(v string) {
+		delivered = append(delivered, v)
+		if v == "boom" {
+			panic("boom in onChange")
+		}
+	}); err != nil {
+		t.Fatalf("ListenConfig: %v", err)
+	}
+
+	m.FireChange("app", "DEFAULT_GROUP", "boom") // panic 不得逃逸
+	m.FireChange("app", "DEFAULT_GROUP", "next")
+	if len(delivered) != 2 || delivered[1] != "next" {
+		t.Fatalf("★ 坏回调后同服务的后续推送必须照常投递: got %v", delivered)
+	}
+}
+
+// TestConfigStore_FireChange_SerialDelivery 回归钉（#158，SPI 契约）：并发
+// FireChange 的 onChange 并发度必须恒为 1（回调必须串行投递、不并发调用
+// onChange——真实现 nacosimpl/etcdx 串行，mock 并发会让「读-改-写」共享
+// 状态代码测试通过、生产才有竞态）。
+func TestConfigStore_FireChange_SerialDelivery(t *testing.T) {
+	m := NewConfigStore()
+	var inFlight atomic.Int32
+	var maxConcurrent atomic.Int32
+	var wg sync.WaitGroup
+	if err := m.ListenConfig(context.Background(), "app", "DEFAULT_GROUP", func(string) {
+		n := inFlight.Add(1)
+		for {
+			old := maxConcurrent.Load()
+			if n <= old || maxConcurrent.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+		inFlight.Add(-1)
+	}); err != nil {
+		t.Fatalf("ListenConfig: %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.FireChange("app", "DEFAULT_GROUP", "v")
+		}()
+	}
+	wg.Wait()
+	if got := maxConcurrent.Load(); got != 1 {
+		t.Fatalf("★ 并发 FireChange 的 onChange 最大并发数=%d, want 1（SPI 契约串行投递，#158）", got)
+	}
+}
+
+// TestSubscriber_Push_PanicIsolatedAndSerial 回归钉（#158，SPI 契约）：一个
+// 坏回调不得让同服务的其他回调收不到事件（原实现 panic 逃逸且后续回调
+// 静默丢失）；并发 Push 的回调并发度恒为 1。
+func TestSubscriber_Push_PanicIsolatedAndSerial(t *testing.T) {
+	m := NewSubscriber()
+	var goodGot atomic.Bool
+	if err := m.Subscribe(context.Background(), "svc", func([]registry.Instance) {
+		panic("boom in cb")
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if err := m.Subscribe(context.Background(), "svc", func([]registry.Instance) {
+		goodGot.Store(true)
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	m.Push("svc", []registry.Instance{{IP: "1.1.1.1"}}) // 坏回调 panic 不得逃逸
+	if !goodGot.Load() {
+		t.Fatal("★ 坏回调之后同服务的第二个回调必须照常投递（#158 EXP-C 面）")
+	}
+
+	// 并发 Push 串行投递。
+	var inFlight, maxConcurrent atomic.Int32
+	if err := m.Subscribe(context.Background(), "svc2", func([]registry.Instance) {
+		n := inFlight.Add(1)
+		for {
+			old := maxConcurrent.Load()
+			if n <= old || maxConcurrent.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+		inFlight.Add(-1)
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.Push("svc2", nil)
+		}()
+	}
+	wg.Wait()
+	if got := maxConcurrent.Load(); got != 1 {
+		t.Fatalf("★ 并发 Push 的 cb 最大并发数=%d, want 1（SPI 契约串行投递，#158）", got)
+	}
+}
+
+// TestDiscoverer_DiscoverAll_PerService 回归钉（#159）：per-service 配置对
+// Discover 与 DiscoverAll 同时生效——同一服务两个方法给出一致视图，ErrMap
+// 故障注入对全量巡检同样有效（不再被静默吞掉）。
+func TestDiscoverer_DiscoverAll_PerService(t *testing.T) {
+	d := &Discoverer{
+		Instances:    []registry.Instance{{IP: "9.9.9.9"}},
+		AllInstances: []registry.Instance{{IP: "8.8.8.8"}},
+		InstancesMap: map[string][]registry.Instance{
+			"svc-a": {{IP: "1.1.1.1"}},
+		},
+		ErrMap: map[string]error{
+			"svc-err": errors.New("boom"),
+		},
+	}
+	ctx := context.Background()
+
+	// svc-a：per-service 覆盖对两个方法同时生效（原先 DiscoverAll 返回默认）。
+	for _, insts := range [][]registry.Instance{
+		func() []registry.Instance { i, _ := d.Discover(ctx, "svc-a"); return i }(),
+		func() []registry.Instance { i, _ := d.DiscoverAll(ctx, "svc-a"); return i }(),
+	} {
+		if len(insts) != 1 || insts[0].IP != "1.1.1.1" {
+			t.Fatalf("★ per-service 覆盖必须对 Discover/DiscoverAll 同时生效: got %v (#159)", insts)
+		}
+	}
+
+	// svc-err：故障注入对 DiscoverAll 同样有效（原先返回健康实例 + nil）。
+	if _, err := d.Discover(ctx, "svc-err"); err == nil {
+		t.Fatal("Discover(svc-err) should fail")
+	}
+	if _, err := d.DiscoverAll(ctx, "svc-err"); err == nil {
+		t.Fatal("★ ErrMap 故障注入不得被 DiscoverAll 静默吞掉(#159)")
+	}
+
+	// 未命中 per-service：回落 DiscoverAll 专用覆盖（AllInstances）。
+	if insts, _ := d.DiscoverAll(ctx, "svc-b"); len(insts) != 1 || insts[0].IP != "8.8.8.8" {
+		t.Fatalf("★ AllInstances 专用覆盖失效: got %v", insts)
+	}
+	// 未命中 per-service：Discover 回落全局默认（不受 AllInstances 影响）。
+	if insts, _ := d.Discover(ctx, "svc-b"); len(insts) != 1 || insts[0].IP != "9.9.9.9" {
+		t.Fatalf("★ Discover 全局默认回落失效: got %v", insts)
+	}
+}
+
+// TestDiscoverer_DiscoverAll_AllErrOnly 专用覆盖的单边形态（#159 语义补充）：
+// 只配 AllErr（AllInstances 为 nil）时 DiscoverAll 全量视图注入故障，Discover
+// 不受牵连。
+func TestDiscoverer_DiscoverAll_AllErrOnly(t *testing.T) {
+	d := &Discoverer{
+		Instances: []registry.Instance{{IP: "9.9.9.9"}},
+		AllErr:    errors.New("all down"),
+	}
+	if _, err := d.DiscoverAll(context.Background(), "any"); err == nil {
+		t.Fatal("★ AllErr 单边覆盖必须对 DiscoverAll 生效(#159)")
+	}
+	insts, err := d.Discover(context.Background(), "any")
+	if err != nil || len(insts) != 1 {
+		t.Fatalf("★ Discover 不受 AllErr 牵连: got (%v, %v)", insts, err)
+	}
+}
+
+// TestMocks_SettersConcurrentNoRace 回归钉（#160，-race）：并发走锁内注入口
+// + 并发方法读——无 DATA RACE、无 fatal error；SetInstances 传 nil 即回退
+// 默认返回。
+func TestMocks_SettersConcurrentNoRace(t *testing.T) {
+	d := &Discoverer{Instances: []registry.Instance{{IP: "9.9.9.9"}}}
+	cs := &ConfigStore{}
+	r := &Registrar{RegErr: errors.New("reg boom")}
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				d.SetInstances("svc", []registry.Instance{{IP: "1.1.1.1"}})
+				d.SetErrMap("svc", nil)
+				d.SetErrMap("svc", errors.New("boom"))
+				d.SetAll([]registry.Instance{{IP: "8.8.8.8"}}, nil)
+				d.SetDefault([]registry.Instance{{IP: "7.7.7.7"}}, nil)
+				cs.SetConfig("app", "DEFAULT_GROUP", "v")
+				cs.SetErr(nil)
+				cs.SetErr(errors.New("cfg boom"))
+				r.SetRegErr(nil)
+				r.SetRegErr(errors.New("reg boom"))
+				r.SetDeregErr(errors.New("dereg boom"))
+				_, _ = d.Discover(context.Background(), "svc")
+				_, _ = d.DiscoverAll(context.Background(), "svc")
+				_, _ = cs.GetConfig(context.Background(), "app", "DEFAULT_GROUP")
+				_ = r.Register(context.Background(), registry.Instance{})
+			}
+		}()
+	}
+	wg.Wait()
+
+	// 行为面：SetInstances(nil) 回退默认；SetErrMap(nil) 清除故障注入。
+	// 并发循环的最后一次写入不定序，先复位再断言。
+	d.SetInstances("svc", nil)
+	d.SetErrMap("svc", nil)
+	d.SetDefault([]registry.Instance{{IP: "7.7.7.7"}}, nil)
+	d.SetAll(nil, nil)
+	cs.SetErr(nil)
+	cs.SetConfig("app", "DEFAULT_GROUP", "v1")
+	r.SetRegErr(nil)
+	r.SetDeregErr(nil)
+	if insts, err := d.Discover(context.Background(), "svc"); err != nil || len(insts) != 1 || insts[0].IP != "7.7.7.7" {
+		t.Fatalf("★ SetInstances(nil) 必须回退默认: got (%v, %v)", insts, err)
+	}
+	if v, err := cs.GetConfig(context.Background(), "app", "DEFAULT_GROUP"); err != nil || v != "v1" {
+		t.Fatalf("★ SetConfig 必须生效: got (%q, %v)", v, err)
+	}
+	if err := r.Register(context.Background(), registry.Instance{}); err != nil {
+		t.Fatalf("★ SetRegErr(nil) 必须恢复注册: %v", err)
 	}
 }

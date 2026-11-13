@@ -51,3 +51,20 @@ func (m *Registrar) Reset() {
 	m.Registered = nil
 	m.Deregistered = nil
 }
+
+// SetRegErr 并发安全地更新 Register 的注入错误（#160 锁内注入口）：直接写
+// RegErr 是锁外写、锁内读——并发场景下 DATA RACE（-race 直接红，非 race
+// 构建是未定义行为）。传 nil 即恢复。
+func (m *Registrar) SetRegErr(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RegErr = err
+}
+
+// SetDeregErr 并发安全地更新 Deregister 的注入错误（#160 锁内注入口）。
+// 语义与约束同 [Registrar.SetRegErr]。
+func (m *Registrar) SetDeregErr(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.DeregErr = err
+}

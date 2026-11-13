@@ -1,3 +1,15 @@
+## [nacosimpl/v0.2.1] — 2026-11-13
+
+- fix: 第六轮 sweep 五单——netutil.ParseAddr host 可路由性判据补齐（link-local/multicast/broadcast/this-network fail-closed + 未指定地址语义判定，#157）、registrymocks SPI 契约落地（FireChange/Push 串行投递 + panic 就地收编，#158）、DiscoverAll 按服务名取值（per-service 覆盖与故障注入对全量视图生效，#159）、mocks 锁内注入口 SetXxx 补齐（#160）、nacosimpl Subscriber 送达面修口（LastErr godoc 写明钉死 SDK 恒 nil + LastPushFor 真实信号源，#161）
+
+关联问题单：registry#157、registry#158、registry#159、registry#160、registry#161。
+
+## [v0.5.17] — 2026-11-13
+
+- fix: 第六轮 sweep 五单——netutil.ParseAddr host 可路由性判据补齐（link-local/multicast/broadcast/this-network fail-closed + 未指定地址语义判定，#157）、registrymocks SPI 契约落地（FireChange/Push 串行投递 + panic 就地收编，#158）、DiscoverAll 按服务名取值（per-service 覆盖与故障注入对全量视图生效，#159）、mocks 锁内注入口 SetXxx 补齐（#160）、nacosimpl Subscriber 送达面修口（LastErr godoc 写明钉死 SDK 恒 nil + LastPushFor 真实信号源，#161）
+
+关联问题单：registry#157、registry#158、registry#159、registry#160、registry#161。
+
 ## [v0.5.16] — 2026-11-13
 
 - Go 1.26 现代化（nacos 嵌套 range N）+ 依赖地板对齐 concurrency v0.34.1。

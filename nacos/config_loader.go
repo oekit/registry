@@ -10,6 +10,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
+	"github.com/oekit/registry/configbridge"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
@@ -99,15 +100,18 @@ func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T
 			}
 		}
 	})
-	err := client.ListenConfig(vo.ConfigParam{
-		DataId: cfg.DataId,
-		Group:  cfg.GroupOrDefault(),
-		OnChange: func(namespace, group, dataId, data string) {
+	// registry#177：经 configbridge 多播桥注册——与同 client 的 config_source
+	// 共享一张表（此前两处各调 SDK ListenConfig，同 key 二次注册新回调被
+	// 静默丢弃、任一取消按 key 整删互杀）。本路径无反注册 API（SDK 无按
+	// 事件反注册，注释见上），句柄随桥表驻留，与监听同生命周期。
+	_, err := configbridge.For(client, bridgeHooks(client)).Subscribe(
+		cfg.DataId, cfg.GroupOrDefault(),
+		func(namespace, group, dataId, data string) {
 			// 只入队，读-改-写全部收敛到 dispatcher（#146）；队列满时阻塞
-			// 背压（见 listenEventQueueDepth），不丢事件。
+			// 背压（见 listenEventQueueDepth），不丢事件。入队在桥的 per-key
+			// 派发锁内执行：背压只拖本 key 推送，不跨 key 耦合。
 			events <- configEvent{namespace: namespace, group: group, dataId: dataId, data: data}
-		},
-	})
+		})
 	if err != nil {
 		close(stop) // 注册失败：dispatcher 在本轮处理后退出，不驻留泄漏
 		log.Error("listen config failed", logx.ErrKey, err)

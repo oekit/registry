@@ -573,10 +573,12 @@ func TestConfigStore_ListenConfig(t *testing.T) {
 }
 
 // TestConfigStore_StopListenConfig covers the StopListenConfig path
-// (delegates to SDK CancelListenConfig).
+// (registry#177：按句柄栈摘除本封装订阅，最后一个订阅者离开才委托
+// SDK CancelListenConfig；无订阅时幂等 no-op 不触底层)。
 func TestConfigStore_StopListenConfig(t *testing.T) {
 	called := false
 	stub := &stubConfigClient{
+		listenConfigFunc: func(_ vo.ConfigParam) error { return nil },
 		cancelListenConfigFunc: func(_ vo.ConfigParam) error {
 			called = true
 			return nil
@@ -584,10 +586,19 @@ func TestConfigStore_StopListenConfig(t *testing.T) {
 	}
 	cs, _ := NewConfigStore(stub)
 	if err := cs.StopListenConfig(context.Background(), "k", "G"); err != nil {
+		t.Errorf("StopListenConfig (no subscription, no-op): %v", err)
+	}
+	if called {
+		t.Error("无订阅时 Stop 应幂等 no-op，不得触底层 Cancel（互杀源头）")
+	}
+	if err := cs.ListenConfig(context.Background(), "k", "G", func(string) {}); err != nil {
+		t.Fatalf("ListenConfig: %v", err)
+	}
+	if err := cs.StopListenConfig(context.Background(), "k", "G"); err != nil {
 		t.Errorf("StopListenConfig: %v", err)
 	}
 	if !called {
-		t.Error("expected SDK CancelListenConfig to be called")
+		t.Error("唯一订阅者离开应委托 SDK CancelListenConfig")
 	}
 }
 
@@ -1442,5 +1453,51 @@ func TestConfigStore_ListenConfig_SerialDelivery(t *testing.T) {
 	}
 	if applied != "v3" {
 		t.Errorf("最终生效配置 = %q, want %q（旧配置最后生效 = #127 复发）", applied, "v3")
+	}
+}
+
+// —— registry#177：同 key 多订阅共存、停止不互杀 ——
+
+// TestConfigStore_MulticastSameKeySameStore 钉住 #177 主诉：同封装同 key
+// 两次 ListenConfig（两个组件各听同一配置）——此前 SDK 单槽第二次注册被
+// 静默丢弃（只有首个回调收到）；桥接后两个回调全部收到，且 StopListenConfig
+// 摘一个不影响另一个（此前 CancelListenConfig 按 key 整删互杀）。
+func TestConfigStore_MulticastSameKeySameStore(t *testing.T) {
+	var sdkOnChanges []func(namespace, group, dataId, data string)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			sdkOnChanges = append(sdkOnChanges, p.OnChange)
+			return nil
+		},
+		cancelListenConfigFunc: func(_ vo.ConfigParam) error { return nil },
+	}
+	cs, _ := NewConfigStore(stub)
+
+	var gotA, gotB []string
+	if err := cs.ListenConfig(context.Background(), "k", "G", func(s string) { gotA = append(gotA, s) }); err != nil {
+		t.Fatalf("Listen A: %v", err)
+	}
+	if err := cs.ListenConfig(context.Background(), "k", "G", func(s string) { gotB = append(gotB, s) }); err != nil {
+		t.Fatalf("Listen B: %v", err)
+	}
+	if len(sdkOnChanges) != 1 {
+		t.Fatalf("底层应只注册一次（多播桥）, got %d", len(sdkOnChanges))
+	}
+
+	sdkOnChanges[0]("ns", "G", "k", "v1")
+	if len(gotA) != 1 || gotA[0] != "v1" || len(gotB) != 1 || gotB[0] != "v1" {
+		t.Fatalf("★ 同 key 两订阅者都应收到（#177 静默丢回调回归）: A=%v B=%v", gotA, gotB)
+	}
+
+	// 摘一个不影响另一个（#177 互杀回归）：LIFO 弹最近的 B，A 幸存。
+	if err := cs.StopListenConfig(context.Background(), "k", "G"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	sdkOnChanges[0]("ns", "G", "k", "v2")
+	if len(gotB) != 1 {
+		t.Fatalf("★ Stop 应摘掉最近订阅者 B（LIFO）: B=%v", gotB)
+	}
+	if len(gotA) != 2 || gotA[1] != "v2" {
+		t.Fatalf("★ 幸存订阅者 A 应继续收到推送（互杀回归）: A=%v", gotA)
 	}
 }

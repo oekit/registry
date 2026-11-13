@@ -438,3 +438,133 @@ func TestParseAddr_AcceptsBoundaryPorts(t *testing.T) {
 		})
 	}
 }
+
+// —— #157 host 可路由性判据 + 未指定地址语义判定 ——
+
+// literalAddr 自定义字面量地址（测试辅助）：net.Addr 接口的最小实现，用于
+// 构造 net.TCPAddr 会归一化掉的字面量形态（如 [::ffff:0.0.0.0]:9090）。
+type literalAddr struct{ s string }
+
+func (a literalAddr) Network() string { return "tcp" }
+func (a literalAddr) String() string  { return a.s }
+
+// TestParseAddr_RejectsNonRoutableHosts 回归钉（#157）：host 维度的可路由性
+// 判据——链路本地单播（含云元数据端点）、组播、受限广播、this-network 全部
+// fail-closed 拒绝（[ErrNonRoutableAddr]），此前全部放行且 err==nil。
+// 对照组：私网/公网地址必须照常放行（注册面放行私网地址，VPC 内可拨）。
+func TestParseAddr_RejectsNonRoutableHosts(t *testing.T) {
+	rejected := []struct {
+		name string
+		addr net.Addr
+	}{
+		{"linklocalV4Metadata", &net.TCPAddr{IP: net.ParseIP("169.254.169.254"), Port: 9090}},
+		{"linklocalV4", &net.TCPAddr{IP: net.ParseIP("169.254.10.20"), Port: 9090}},
+		{"linklocalV6", literalAddr{"[fe80::1]:9090"}},
+		{"multicastV4", &net.TCPAddr{IP: net.ParseIP("224.0.0.1"), Port: 9090}},
+		{"multicastV6", literalAddr{"[ff02::1]:9090"}},
+		{"broadcastV4", &net.TCPAddr{IP: net.ParseIP("255.255.255.255"), Port: 9090}},
+		{"thisNetwork", &net.TCPAddr{IP: net.ParseIP("0.1.2.3"), Port: 9090}},
+	}
+	for _, tt := range rejected {
+		t.Run(tt.name, func(t *testing.T) {
+			ip, _, err := ParseAddr(tt.addr)
+			if err == nil {
+				t.Fatalf("★ ParseAddr(%v) 放行了不可路由地址 %q（#157）", tt.addr, ip)
+			}
+			if !errors.Is(err, ErrNonRoutableAddr) {
+				t.Errorf("err = %v, want ErrNonRoutableAddr", err)
+			}
+		})
+	}
+
+	// 对照组：私网与公网地址照常放行（判据不误伤）。
+	accepted := []struct {
+		name string
+		addr net.Addr
+		want string
+	}{
+		{"privateV4", &net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 9090}, "10.0.0.1"},
+		{"globalV6", literalAddr{"[2606:4700::1]:9090"}, "2606:4700::1"},
+	}
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			ip, port, err := ParseAddr(tt.addr)
+			if err != nil {
+				t.Fatalf("★ 对照组被误伤: ParseAddr(%v) = %v", tt.addr, err)
+			}
+			if ip != tt.want || port != 9090 {
+				t.Errorf("ParseAddr = (%q, %d), want (%q, 9090)", ip, port, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseAddr_LinkLocal_ZonedAndBareSameVerdict 回归钉（#157）：实现内部
+// 自相矛盾的收敛——zoned 链路本地（fe80::1%eth0，zone 为本机接口名）此前被
+// 拒、同一地址去掉 zone 却放行；修复后两者结论一致（都拒绝，err 必须非 nil，
+// sentinel 按形态各自归位）。
+func TestParseAddr_LinkLocal_ZonedAndBareSameVerdict(t *testing.T) {
+	_, _, errZoned := ParseAddr(literalAddr{"[fe80::1%eth0]:9090"})
+	if errZoned == nil {
+		t.Fatal("★ zoned 链路本地必须拒绝")
+	}
+	_, _, errBare := ParseAddr(literalAddr{"[fe80::1]:9090"})
+	if errBare == nil {
+		t.Fatal("★ 同一地址去掉 zone 同样必须拒绝（#157 判据分裂收敛）")
+	}
+	// sentinel 按形态各自归位：zoned 拒的是「zone 本机接口名」（#77 形态），
+	// bare 拒的是「不可跨节点路由」（#157 新判据）。
+	if !errors.Is(errZoned, ErrInvalidHostAddr) {
+		t.Errorf("zoned err = %v, want ErrInvalidHostAddr", errZoned)
+	}
+	if !errors.Is(errBare, ErrNonRoutableAddr) {
+		t.Errorf("bare err = %v, want ErrNonRoutableAddr", errBare)
+	}
+}
+
+// TestParseAddr_UnspecifiedSpellingsFallBack 回归钉（#157）：未指定地址的
+// 兜底触发条件从字面量比对改为 netip 语义判定——::0 / 0:0:0:0:0:0:0:0 /
+// ::ffff:0.0.0.0 与 "::"/"0.0.0.0" 同语义，全部走 GetPodIP 兜底成可拨号
+// 地址，不再以「拨不通的通配地址」原样注册。
+func TestParseAddr_UnspecifiedSpellingsFallBack(t *testing.T) {
+	t.Setenv("POD_IP", "10.1.2.3")
+	spellings := []struct {
+		name string
+		addr net.Addr
+	}{
+		{"v6Unspec", literalAddr{"[::]:9090"}},
+		{"v6UnspecAlt", literalAddr{"[::0]:9090"}},
+		{"v6UnspecFull", literalAddr{"[0:0:0:0:0:0:0:0]:9090"}},
+		{"v4MappedUnspec", literalAddr{"[::ffff:0.0.0.0]:9090"}},
+		{"v4Unspec", &net.TCPAddr{IP: net.IPv4zero, Port: 9090}},
+		{"emptyHost", &net.TCPAddr{Port: 9090}},
+	}
+	for _, tt := range spellings {
+		t.Run(tt.name, func(t *testing.T) {
+			ip, port, err := ParseAddr(tt.addr)
+			if err != nil {
+				t.Fatalf("ParseAddr(%v): %v", tt.addr, err)
+			}
+			if ip != "10.1.2.3" || port != 9090 {
+				t.Errorf("★ 非规范拼写绕过兜底: ParseAddr = (%q, %d), want (10.1.2.3, 9090)", ip, port)
+			}
+		})
+	}
+}
+
+// TestParseAddr_RejectsNonRoutablePODIP 回归钉（#157）：POD_IP 配成链路本地
+// 段（云元数据端点形态）同样 fail-closed——配错要看得见，不能被 GetPodIP
+// 的「善意兜底」掩盖成看似可拨通的地址。
+func TestParseAddr_RejectsNonRoutablePODIP(t *testing.T) {
+	t.Setenv("POD_IP", "169.254.10.20")
+	_, _, err := ParseAddr(&net.TCPAddr{Port: 9090})
+	if err == nil {
+		t.Fatal("★ POD_IP 链路本地段必须拒绝(#157)")
+	}
+	if !errors.Is(err, ErrNonRoutableAddr) {
+		t.Errorf("err = %v, want ErrNonRoutableAddr", err)
+	}
+	if !strings.Contains(err.Error(), "169.254.10.20") {
+		t.Errorf("err = %v, want it to mention the misconfigured POD_IP", err)
+	}
+}

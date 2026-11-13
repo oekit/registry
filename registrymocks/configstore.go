@@ -2,16 +2,24 @@ package registrymocks
 
 import (
 	"context"
+	"log"
 	"sync"
+
+	"github.com/oekit/pkg/errors"
 )
 
 // ConfigStore 是 [registry.ConfigStore] 的可配置 mock 实现。
 //
-// 通过 configs map 配置 dataID/group 对应的配置内容；
-// 通过 listening map 跟踪已注册的监听器，可通过 FireChange 模拟配置变更推送。
+// 通过 Configs map 配置 dataID/group 对应的配置内容；
+// 通过 Listening map 跟踪已注册的监听器，可通过 FireChange 模拟配置变更推送。
 //
 // 零值可用（#150）：结构体字面量构造（如 &ConfigStore{}）后各方法可直接
 // 调用——map 字段在首次写入时惰性初始化，与 NewConfigStore() 等价。
+//
+// 并发注入口（#160）：直接写导出字段（Configs/Listening/Err）会绕过 mu 锁
+// ——并发场景下是进程级 fatal error（map）或 DATA RACE（标量字段）；并发
+// 测试请走锁内注入口 SetConfig/SetErr 与 SPI 方法 ListenConfig/
+// StopListenConfig，构造期（未开始并发使用前）的字面量赋值不受限。
 type ConfigStore struct {
 	mu sync.Mutex
 
@@ -25,6 +33,14 @@ type ConfigStore struct {
 	Err error
 	// dataID/group → onChange 回调
 	Listening map[string]func(string)
+
+	// deliverMu 串行化 onChange 投递（#158，SPI 契约「回调必须串行投递、
+	// 不并发调用 onChange」）：FireChange 在释放 mu 后才调回调，多个
+	// goroutine 并发 FireChange 时 onChange 被并发调用——真实现
+	// （nacosimpl/etcdx）串行投递，mock 并发投递会让消费方「读-改-写」
+	// 共享状态代码测试通过、生产才有竞态。本锁不得与 mu 混用（回调可能
+	// 回查 GetConfig/ListenConfig 重入 mu，持 mu 调回调 = 死锁）。
+	deliverMu sync.Mutex
 }
 
 // NewConfigStore 创建一个空的 ConfigStore。
@@ -84,6 +100,18 @@ func (m *ConfigStore) SetErr(err error) {
 	m.Err = err
 }
 
+// SetConfig 并发安全地写入指定 dataID/group 的配置内容（#160 锁内注入口）：
+// 直接写 Configs map 会绕过 mu 锁，并发场景下是进程级 fatal error
+// （concurrent map read and map write）——整个测试二进制终止而非单测失败。
+func (m *ConfigStore) SetConfig(dataID, group, value string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Configs == nil {
+		m.Configs = make(map[string]string)
+	}
+	m.Configs[keyOf(dataID, group)] = value
+}
+
 // ListeningCountFor 返回指定 dataID/group 当前注册的监听器数量（1 或 0）。
 // 供测试轮询等待 ListenConfig 完成注册。
 func (m *ConfigStore) ListeningCountFor(dataID, group string) int {
@@ -96,11 +124,27 @@ func (m *ConfigStore) ListeningCountFor(dataID, group string) int {
 }
 
 // FireChange 主动触发指定 dataID/group 的 onChange 回调，模拟配置中心推送。
+//
+// SPI 契约落地（#158，根包 config.go 对所有实现的硬性要求，nacosimpl 同款）：
+//   - 串行投递：deliverMu 保证并发 FireChange 不并发调用 onChange（快速连更
+//     时旧配置不得后到先生效，与 etcdx/nacosimpl 口径对齐）；
+//   - panic 就地隔离：onChange panic 经 errors.Recovered 收编转错误日志——
+//     消费方回调质量不可控，坏回调不得沿派发链上抛打死宿主测试进程，
+//     同服务的后续推送照常投递。
 func (m *ConfigStore) FireChange(dataID, group, newValue string) {
 	m.mu.Lock()
 	cb, ok := m.Listening[keyOf(dataID, group)]
 	m.mu.Unlock()
-	if ok && cb != nil {
-		cb(newValue)
+	if !ok || cb == nil {
+		return
 	}
+	m.deliverMu.Lock()
+	defer m.deliverMu.Unlock()
+	defer func() {
+		if perr := errors.Recovered(recover()); perr != nil {
+			log.Printf("[registrymocks] config change callback panicked (isolated): dataID=%s group=%s err=%v stack=%s",
+				dataID, group, perr, perr.(*errors.PanicError).Stack)
+		}
+	}()
+	cb(newValue)
 }

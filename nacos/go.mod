@@ -17,7 +17,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/oekit/concurrency v0.34.1
+require github.com/oekit/concurrency v0.35.0
 
 require (
 	github.com/alibabacloud-go/alibabacloud-gateway-pop v0.0.6 // indirect

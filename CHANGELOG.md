@@ -1,3 +1,12 @@
+## [v0.6.1] — 2026-11-15
+
+- 热深厚拷贝改反射单源（#195）：cloneValue JSON 往返换 pkg/reflectx.DeepCopy，未导出字段与引用字段全保，func/chan 不再被跳过
+- 错误面分组与请求面同源（#196）：LoadAndMerge/ConfigSource.Read 的 cfg.Group 改 GroupOrDefault()
+- parseAddr 端口范围校验（#197）：1-65535 入口拒绝包 ErrInvalidPort，GrpcPort 非 0 同门
+- Discoverer 缺省错误路径归位（#198）：缺省回落先判 m.Err 返回 (nil, err)，与 ErrMap 同形状
+
+关联问题单：registry#195、registry#196、registry#197、registry#198。
+
 ## [nacosimpl/v0.3.0] — 2026-11-13
 
 - feat(configbridge): 新增多播桥子包——nacos-sdk ListenConfig 单槽语义抬升为多播（#177 P1）。同 (dataID, group) 重复注册新回调静默失效、Cancel 按 key 整删互杀的两处病灶闭合：按 client 身份共享表、底层只注册一次、句柄独立摘除、最后一个订阅者离开才 Cancel；per-key 派发锁 + 逐订阅 panic 隔离。nacosimpl ConfigStore（句柄栈 LIFO 适配无句柄接口，与 etcdx 替换语义同向）、nacos config_source（ctx 按句柄摘除）、config_loader（背压只拖本 key）三处接入。行为变更：无订阅 Stop 从无条件调 SDK Cancel 改为幂等 no-op。

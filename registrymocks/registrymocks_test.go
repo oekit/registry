@@ -327,6 +327,41 @@ func TestDiscoverer_DiscoverAll_AllErrOnly(t *testing.T) {
 	}
 }
 
+// TestDiscoverer_DefaultErrShape 回归（#198）：全局 Err 注入必须与 ErrMap
+// 路径同形状——(nil, err)。此前缺省路径返回 (m.Instances, m.Err)：Instances
+// 与 Err 同时非 nil，按 err 短路则 Instances 是死数据、按 len 断言则 Err
+// 是死数据，断言随注入方式漂移（同一 mock 的两种注入给出不同零值形状）。
+func TestDiscoverer_DefaultErrShape(t *testing.T) {
+	boom := errors.New("boom")
+	d := &Discoverer{
+		Instances: []registry.Instance{{IP: "10.0.0.1", Port: 80}},
+		Err:       boom,
+	}
+	ctx := context.Background()
+
+	insts, err := d.Discover(ctx, "any")
+	if !errors.Is(err, boom) {
+		t.Fatalf("Discover err = %v, want boom", err)
+	}
+	if insts != nil {
+		t.Fatalf("#198: Discover 全局 Err 注入必须返回 nil 实例, got %+v", insts)
+	}
+	all, err := d.DiscoverAll(ctx, "any")
+	if !errors.Is(err, boom) {
+		t.Fatalf("DiscoverAll err = %v, want boom", err)
+	}
+	if all != nil {
+		t.Fatalf("#198: DiscoverAll 缺省回落必须返回 nil 实例, got %+v", all)
+	}
+
+	// 无错路径不受影响：Instances 照常返回
+	ok := &Discoverer{Instances: []registry.Instance{{IP: "10.0.0.2"}}}
+	insts, err = ok.Discover(ctx, "any")
+	if err != nil || len(insts) != 1 || insts[0].IP != "10.0.0.2" {
+		t.Fatalf("无错路径 Discover = (%v, %v), want (1 实例, nil)", insts, err)
+	}
+}
+
 // TestMocks_SettersConcurrentNoRace 回归钉（#160，-race）：并发走锁内注入口
 // + 并发方法读——无 DATA RACE、无 fatal error；SetInstances 传 nil 即回退
 // 默认返回。

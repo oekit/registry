@@ -52,7 +52,8 @@ func (s *ConfigSource) Read() ([]byte, error) {
 		Group:  s.cfg.GroupOrDefault(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get nacos config [%s/%s]: %w", s.cfg.Group, s.cfg.DataId, err)
+		// #196：错误面与请求面同源（GroupOrDefault），口径同 LoadAndMerge。
+		return nil, fmt.Errorf("get nacos config [%s/%s]: %w", s.cfg.GroupOrDefault(), s.cfg.DataId, err)
 	}
 	return []byte(content), nil
 }

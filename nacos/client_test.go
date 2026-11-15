@@ -1,9 +1,12 @@
 package nacos
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/oekit/registry"
 )
 
 func TestParseAddr(t *testing.T) {
@@ -37,6 +40,34 @@ func TestParseAddr(t *testing.T) {
 				t.Errorf("port = %d, want %d", port, tt.wantPort)
 			}
 		})
+	}
+}
+
+// TestParseAddr_PortRangeFailClosed 回归（#197）：端口范围 fail-closed，
+// 与 registry.ParseAddr 的 #104 同口径复用 registry.ErrInvalidPort——
+// 此前只做语法校验（上界 2^64-1 且接受 "0"），0/70000 直通 ServerConfig，
+// 配错端口推迟到 SDK 连接期才暴露且报错不点名端口越界。
+func TestParseAddr_PortRangeFailClosed(t *testing.T) {
+	for _, addr := range []string{"nacos.local:0", "nacos.local:65536", "nacos.local:70000"} {
+		if _, _, err := parseAddr(addr); !errors.Is(err, registry.ErrInvalidPort) {
+			t.Errorf("parseAddr(%q) err = %v, want wrapped registry.ErrInvalidPort", addr, err)
+		}
+	}
+	// 边界内放行
+	if _, port, err := parseAddr("nacos.local:65535"); err != nil || port != 65535 {
+		t.Errorf("parseAddr 65535 = (%d, %v), want (65535, nil)", port, err)
+	}
+}
+
+// TestBuildNacosConfig_GrpcPortRangeFailClosed 同门覆盖 GrpcPort（#197：
+// types.go 同样零校验）——非 0 越界 fail-closed，0 表示未设置（SDK 默认
+// serverPort+1000）放行。
+func TestBuildNacosConfig_GrpcPortRangeFailClosed(t *testing.T) {
+	if _, _, err := buildNacosConfig(Bootstrap{Addr: "nacos.local:8848", GrpcPort: 99999}); !errors.Is(err, registry.ErrInvalidPort) {
+		t.Errorf("grpc_port 99999 err = %v, want wrapped registry.ErrInvalidPort", err)
+	}
+	if _, _, err := buildNacosConfig(Bootstrap{Addr: "nacos.local:8848"}); err != nil {
+		t.Errorf("unset grpc_port (0) must be allowed, got %v", err)
 	}
 }
 

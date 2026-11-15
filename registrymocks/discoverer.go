@@ -20,7 +20,11 @@ import (
 type Discoverer struct {
 	mu sync.Mutex
 
-	// 默认返回（所有服务都返回这些实例，除非 InstancesMap 覆盖）
+	// 默认返回（所有服务都返回这些实例，除非 InstancesMap 覆盖）。
+	// Err 非 nil 时 Discover/DiscoverAll 的缺省回落返回 (nil, Err)——
+	// 与 ErrMap 路径同形状（#198）：此前返回 (Instances, Err)，两者
+	// 同时非 nil，按 err 短路则 Instances 是死数据、按 len 断言则 Err
+	// 是死数据，断言随注入方式漂移。
 	Instances []registry.Instance
 	Err       error
 
@@ -35,6 +39,10 @@ type Discoverer struct {
 }
 
 // Discover 返回配置的实例列表。
+//
+// 错误形状（#198）：任何错误注入路径都返回 (nil, err)——ErrMap 与全局 Err
+// 同形状，消费方按 `if err != nil` 短路时实例面恒为 nil，不再出现
+// 「Instances 与 Err 同时非 nil」的分裂。
 func (m *Discoverer) Discover(_ context.Context, serviceName string) ([]registry.Instance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -44,7 +52,10 @@ func (m *Discoverer) Discover(_ context.Context, serviceName string) ([]registry
 	if insts, ok := m.InstancesMap[serviceName]; ok {
 		return insts, nil
 	}
-	return m.Instances, m.Err
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.Instances, nil
 }
 
 // DiscoverAll 返回配置的全部实例列表（含不健康实例——根包 SPI 口径）。
@@ -67,7 +78,11 @@ func (m *Discoverer) DiscoverAll(_ context.Context, serviceName string) ([]regis
 	if m.AllInstances != nil || m.AllErr != nil {
 		return m.AllInstances, m.AllErr
 	}
-	return m.Instances, m.Err
+	// #198：缺省回落与 Discover 同形状（nil 实例 + Err）。
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.Instances, nil
 }
 
 // SetInstances 并发安全地写入指定服务的 per-service 实例覆盖（#160 锁内

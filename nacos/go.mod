@@ -18,7 +18,7 @@ require (
 )
 
 require (
-	github.com/oekit/concurrency v0.36.1
+	github.com/oekit/concurrency v0.37.0
 	github.com/oekit/registry v0.6.0
 )
 
@@ -56,7 +56,7 @@ require (
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
-	github.com/oekit/pkg v0.48.0 // indirect
+	github.com/oekit/pkg v0.50.0 // indirect
 	github.com/orcaman/concurrent-map v0.0.0-20210501183033-44dafcb38ecc // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.12.2 // indirect

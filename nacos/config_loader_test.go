@@ -37,7 +37,7 @@ func (s *stubConfigClient) CancelListenConfig(p vo.ConfigParam) error {
 	return nil
 }
 
-// hotCfg 是热更测试用的最小可 JSON 往返配置。
+// hotCfg 是热更测试用的最小配置。
 type hotCfg struct {
 	N int
 }
@@ -271,6 +271,71 @@ func TestListen_HotUpdate_InPlaceCallerStyleAgrees(t *testing.T) {
 	}
 	if cfg.A != "a1" || cfg.B != "b1" {
 		t.Errorf("调用方自身配置 = %+v, want {A:a1 B:b1}", cfg)
+	}
+}
+
+// runtimeFieldsCfg 是 #195 回归用配置：json:"-" 与未导出字段是 derived/
+// runtime 字段的常见写法，热更基线深拷贝不得丢。
+type runtimeFieldsCfg struct {
+	N      int
+	Hidden string `json:"-"` // JSON 往返会丢；反射深拷贝必须保
+	cached string // 未导出：JSON 往返必丢（Marshal 看不见）
+}
+
+// TestListen_HotUpdatePreservesJSONDashAndUnexportedFields 回归（#195）：
+// 热更基线此前走 JSON 往返深拷贝——json:"-" 与未导出字段被**静默**丢弃
+// （往返不报错：既不触发「跳过」也不记 Error），零值 clone 被
+// latest.Store 固化为后续热更的基线并经 onChange 交付，调用方按 godoc
+// 典型用法「整体替换自身配置指针」后这些字段归零且永不恢复（OverlayMerge
+// 只做非零覆盖，零值不会被远端补回）。
+func TestListen_HotUpdatePreservesJSONDashAndUnexportedFields(t *testing.T) {
+	var fired func(namespace, group, dataId, data string)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			fired = p.OnChange
+			return nil
+		},
+	}
+
+	delivered := make(chan *runtimeFieldsCfg, 8)
+	err := Listen(stub, Bootstrap{DataId: "app.yaml", Group: "G"},
+		&runtimeFieldsCfg{N: 1, Hidden: "keep-hidden", cached: "keep-cached"},
+		func(c *runtimeFieldsCfg) { delivered <- c })
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	waitOne := func(step string) *runtimeFieldsCfg {
+		t.Helper()
+		select {
+		case d := <-delivered:
+			return d
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s：变更未投递", step)
+			return nil
+		}
+	}
+
+	// 第一次远端变更：只改 N
+	fired("ns", "G", "app.yaml", "n: 2\n")
+	d1 := waitOne("第一次变更")
+	if d1.N != 2 {
+		t.Fatalf("第一次变更后 N = %d, want 2", d1.N)
+	}
+	if d1.Hidden != "keep-hidden" {
+		t.Fatalf("#195: json:\"-\" 字段热更后归零: %+v", d1)
+	}
+	if d1.cached != "keep-cached" {
+		t.Fatalf("#195: 未导出字段热更后归零: %+v", d1)
+	}
+
+	// 第二次变更：零值一旦被固化为基线就永不恢复——字段必须继续在
+	fired("ns", "G", "app.yaml", "n: 3\n")
+	d2 := waitOne("第二次变更")
+	if d2.N != 3 {
+		t.Fatalf("第二次变更后 N = %d, want 3", d2.N)
+	}
+	if d2.Hidden != "keep-hidden" || d2.cached != "keep-cached" {
+		t.Fatalf("#195: 字段在基线固化后丢失: %+v", d2)
 	}
 }
 

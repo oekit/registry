@@ -1,7 +1,6 @@
 package nacos
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"runtime/debug"
@@ -10,6 +9,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/reflectx"
 	"github.com/oekit/registry/configbridge"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
@@ -73,8 +73,11 @@ const listenEventQueueDepth = 128
 //     收敛到单一执行流：事件按到达序 FIFO 串行处理，回调不会并发调用；
 //     残余边界：到达序 ≠ 推送序（SDK 每事件各起 goroutine，推送顺序本就
 //     不可观测），本修复消灭的是基线丢失更新与回调并发；
-//   - T 必须可 JSON 往返（深拷贝依赖），否则本次热更被跳过并记 Error，
-//     绝不降级为原地合并调用方的活配置；
+//   - 热更基线深拷贝走反射（pkg/reflectx 单源，#195）：`json:"-"` 与
+//     未导出字段原样保留——此前 JSON 往返对这两类字段**静默丢值**（不报错、
+//     不触发跳过），零值被 latest.Store 固化为后续热更的基线；func/chan
+//     共享即拷贝，不再因此跳过热更。基线为 nil 时本次热更被跳过并记
+//     Error，绝不降级为原地合并调用方的活配置；
 //   - onChange 的 panic 被就地隔离（recover 转错误日志，#96）：dispatcher
 //     若被回调 panic 打死，后续事件全部滞留队列、SDK 派发 goroutine 逐个
 //     阻塞在入队上——按事件隔离后热更循环继续。
@@ -136,8 +139,8 @@ func applyHotUpdate[T any](latest *atomic.Pointer[T], cfg Bootstrap, onChange fu
 
 	base, ok := cloneValue(latest.Load())
 	if !ok {
-		// 快照克隆失败（T 含 chan/func 等不可 JSON 字段）时放弃本次
-		// 热更：降级为原地合并会改写调用方正在被读取的活配置
+		// 快照克隆失败（nil 基线）时放弃本次热更：降级为原地合并会
+		// 改写调用方正在被读取的活配置
 		return
 	}
 
@@ -173,19 +176,21 @@ func preserveNacosBootstrap[T any](cfg *T, bootstrap Bootstrap) {
 	}
 }
 
-// cloneValue 深拷贝配置快照（JSON 往返）。
-// 失败时返回 (nil, false) 而非原指针：返回原指针会让后续 OverlayMerge
-// 原地改写调用方的活配置。
+// cloneValue 深拷贝配置快照（反射深拷贝，单源 pkg/reflectx，#195）。
+//
+// 此前走 JSON 往返：T 里 `json:"-"` 与未导出字段在 Marshal 时被丢弃、
+// Unmarshal 后为零值——往返**不报错**，既不触发「跳过」也不记 Error，
+// 零值 clone 随即被 latest.Store 固化为下一次热更的基线并经 onChange
+// 交付给调用方（#195）。反射深拷贝整块值拷贝 struct（未导出字段原样
+// 保留，core#84 同款）+ 可 Set 引用型字段逐一递归，`json:"-"` 与未导出
+// 字段均不再丢值；func/chan 共享即拷贝（不再因此跳过热更）。
+//
+// 失败（nil 基线）时返回 (nil, false) 而非原指针：返回原指针会让后续
+// OverlayMerge 原地改写调用方的活配置。
 func cloneValue[T any](ptr *T) (*T, bool) {
-	data, err := json.Marshal(ptr)
-	if err != nil {
-		log.Error("cloneValue marshal failed; hot update skipped", logx.ErrKey, err)
+	if ptr == nil {
+		log.Error("cloneValue nil baseline; hot update skipped")
 		return nil, false
 	}
-	clone := new(T)
-	if err := json.Unmarshal(data, clone); err != nil {
-		log.Error("cloneValue unmarshal failed; hot update skipped", logx.ErrKey, err)
-		return nil, false
-	}
-	return clone, true
+	return reflectx.DeepCopy(ptr), true
 }

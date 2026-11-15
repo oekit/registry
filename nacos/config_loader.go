@@ -26,7 +26,10 @@ func LoadAndMerge[T any](client config_client.IConfigClient, cfg Bootstrap, loca
 		Group:  cfg.GroupOrDefault(),
 	})
 	if err != nil {
-		return fmt.Errorf("get nacos config [%s/%s]: %w", cfg.Group, cfg.DataId, err)
+		// #196：错误面与请求面同源（GroupOrDefault）——此前用裸 cfg.Group，
+		// 空分组时实际请求 DEFAULT_GROUP、消息却渲染成 "[/app.yaml]"，
+		// 按消息里的分组去控制台查会查不到。
+		return fmt.Errorf("get nacos config [%s/%s]: %w", cfg.GroupOrDefault(), cfg.DataId, err)
 	}
 
 	if content == "" {

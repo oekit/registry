@@ -2,8 +2,10 @@ package nacos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,8 +21,16 @@ import (
 type stubConfigClient struct {
 	config_client.IConfigClient
 
+	getConfigFunc          func(vo.ConfigParam) (string, error)
 	listenConfigFunc       func(vo.ConfigParam) error
 	cancelListenConfigFunc func(vo.ConfigParam) error
+}
+
+func (s *stubConfigClient) GetConfig(p vo.ConfigParam) (string, error) {
+	if s.getConfigFunc != nil {
+		return s.getConfigFunc(p)
+	}
+	return "", nil
 }
 
 func (s *stubConfigClient) ListenConfig(p vo.ConfigParam) error {
@@ -64,6 +74,49 @@ func TestListen_OnChangePanicIsolated(t *testing.T) {
 	}
 	// 模拟 SDK 派发 goroutine 直调 OnChange（带合法 yaml 使其走到 onChange）。
 	fired("ns", "G", "app.yaml", "n: 2")
+}
+
+// TestLoadAndMerge_ErrorNamesEffectiveGroup 回归（#196）：错误文案必须与
+// 实际请求的分组同源（GroupOrDefault）——此前请求面回填 DEFAULT_GROUP、
+// 错误面用裸 cfg.Group，空分组时消息渲染成 "get nacos config [/app.yaml]"
+// （分位为空、形似路径错误），按消息里的分组去 Nacos 控制台查会查不到。
+func TestLoadAndMerge_ErrorNamesEffectiveGroup(t *testing.T) {
+	stub := &stubConfigClient{
+		getConfigFunc: func(p vo.ConfigParam) (string, error) {
+			if p.Group != "DEFAULT_GROUP" {
+				t.Errorf("请求面 group = %q, want DEFAULT_GROUP（回填口径）", p.Group)
+			}
+			return "", errors.New("nacos down")
+		},
+	}
+	err := LoadAndMerge(stub, Bootstrap{DataId: "app.yaml"}, &hotCfg{})
+	if err == nil {
+		t.Fatal("LoadAndMerge 必须上抛 GetConfig 错误")
+	}
+	if !strings.Contains(err.Error(), "DEFAULT_GROUP/app.yaml") {
+		t.Fatalf("错误文案必须点名生效分组/数据ID, got: %v", err)
+	}
+}
+
+// TestConfigSource_Read_ErrorNamesEffectiveGroup 同型覆盖 ConfigSource.Read
+// （config_source.go 同一文案族，#196）。
+func TestConfigSource_Read_ErrorNamesEffectiveGroup(t *testing.T) {
+	stub := &stubConfigClient{
+		getConfigFunc: func(p vo.ConfigParam) (string, error) {
+			if p.Group != "DEFAULT_GROUP" {
+				t.Errorf("请求面 group = %q, want DEFAULT_GROUP（回填口径）", p.Group)
+			}
+			return "", errors.New("nacos down")
+		},
+	}
+	s := NewConfigSource(stub, Bootstrap{DataId: "app.yaml"})
+	_, err := s.Read()
+	if err == nil {
+		t.Fatal("Read 必须上抛 GetConfig 错误")
+	}
+	if !strings.Contains(err.Error(), "DEFAULT_GROUP/app.yaml") {
+		t.Fatalf("错误文案必须点名生效分组/数据ID, got: %v", err)
+	}
 }
 
 // TestConfigSource_Watch_OnChangePanicIsolated 同型覆盖 ConfigSource.Watch

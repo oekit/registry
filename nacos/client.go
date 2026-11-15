@@ -13,6 +13,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/common/constant"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
+	"github.com/oekit/registry"
 )
 
 // defaultNacosLogDir / defaultNacosCacheDir 是 Nacos SDK 日志/缓存默认目录。
@@ -27,6 +28,14 @@ func buildNacosConfig(cfg Bootstrap) ([]constant.ServerConfig, *constant.ClientC
 	host, port, err := parseAddr(cfg.Addr)
 	if err != nil {
 		return nil, nil, err
+	}
+	// #197：GrpcPort 同属可拨号端口面——0 表示未设置（SDK 默认
+	// serverPort+1000），非 0 时必须落在 1..65535，否则推迟到 SDK
+	// 拨号期才暴露（fail-late）。
+	if cfg.GrpcPort > 65535 {
+		return nil, nil, fmt.Errorf(
+			"invalid nacos grpc_port %d (must be within 1..65535 to be dialable): %w",
+			cfg.GrpcPort, registry.ErrInvalidPort)
 	}
 
 	contextPath := cfg.ContextPath
@@ -109,6 +118,15 @@ func parseAddr(addr string) (string, uint64, error) {
 	port, err := strconv.ParseUint(portStr, 10, 64)
 	if err != nil {
 		return "", 0, fmt.Errorf("invalid nacos port in %q: %w", addr, err)
+	}
+	// #197：端口范围 fail-closed（与 registry.ParseAddr 的 #104 同口径、
+	// 复用同一 sentinel）——此前只做语法校验，0/70000 直通 ServerConfig，
+	// 失败推迟到首次 GetConfig/Register 的 SDK 拨号期才暴露，报错形态是
+	// 连接错误、不点名「端口越界」（fail-late 而非 silent-success）。
+	if port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf(
+			"invalid nacos port %d in %q (must be within 1..65535 to be dialable): %w",
+			port, addr, registry.ErrInvalidPort)
 	}
 	return host, port, nil
 }

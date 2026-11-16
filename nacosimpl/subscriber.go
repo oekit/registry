@@ -3,7 +3,6 @@ package nacos
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"runtime/debug"
 	"slices"
@@ -14,6 +13,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -192,7 +192,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, serviceName string, cb func(
 				log.Error("subscribe callback error (cached view may be stale until next push)",
 					"service", serviceName, logx.ErrKey, err)
 				s.mu.Lock()
-				s.lastErrs[serviceName] = fmt.Errorf("nacosimpl: subscribe push for %s: %w", serviceName, err)
+				s.lastErrs[serviceName] = pkgerrors.Wrapf(err, "nacosimpl: subscribe push for %s", serviceName)
 				s.mu.Unlock()
 				return
 			}

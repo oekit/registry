@@ -22,9 +22,10 @@
 package configbridge
 
 import (
-	"fmt"
 	"runtime/debug"
 	"sync"
+
+	"github.com/oekit/pkg/errors"
 )
 
 // ChangeFunc 与 nacos-sdk 的 OnChange 同签名（namespace, group, dataId, data），
@@ -123,7 +124,7 @@ func (b *Bridge) lockFor(k string) *sync.Mutex {
 // 语义由此被多播覆盖）；首个订阅者进入才调 hooks.Listen。
 func (b *Bridge) Subscribe(dataID, group string, cb func(namespace, group, dataID, data string)) (Handle, error) {
 	if cb == nil {
-		return 0, fmt.Errorf("configbridge: nil onChange for %s/%s", group, dataID)
+		return 0, errors.Newf("configbridge: nil onChange for %s/%s", group, dataID)
 	}
 	k := keyOf(dataID, group)
 
@@ -153,7 +154,7 @@ func (b *Bridge) Subscribe(dataID, group string, cb func(namespace, group, dataI
 			b.bridged[k] = false
 		}
 		b.mu.Unlock()
-		return 0, fmt.Errorf("configbridge: listen %s/%s: %w", group, dataID, err)
+		return 0, errors.Wrapf(err, "configbridge: listen %s/%s", group, dataID)
 	}
 	return id, nil
 }
@@ -183,7 +184,7 @@ func (b *Bridge) Unsubscribe(dataID, group string, id Handle) error {
 		return nil
 	}
 	if err := b.hooks.Cancel(dataID, group); err != nil {
-		return fmt.Errorf("configbridge: cancel %s/%s: %w", group, dataID, err)
+		return errors.Wrapf(err, "configbridge: cancel %s/%s", group, dataID)
 	}
 	return nil
 }

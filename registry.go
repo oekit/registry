@@ -2,14 +2,14 @@ package registry
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"maps"
 	"net"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/oekit/pkg/errors"
 )
 
 // ErrNoInstances 表示服务发现未找到任何实例。
@@ -140,7 +140,7 @@ func WithGroup(group string) RegisterOptionFunc {
 // defaultWeight 用于 weight<=0 的回退值。
 func InfoFrom(name string, addr net.Addr, weight, defaultWeight int, tags map[string]string) (Instance, error) {
 	if name == "" {
-		return Instance{}, fmt.Errorf("registry: service name is empty")
+		return Instance{}, errors.New("registry: service name is empty")
 	}
 	ip, port, err := ParseAddr(addr)
 	if err != nil {

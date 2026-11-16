@@ -1,3 +1,7 @@
+## [v0.6.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至最新已发布
+
 ## [v0.6.1] — 2026-11-15
 
 - 热深厚拷贝改反射单源（#195）：cloneValue JSON 往返换 pkg/reflectx.DeepCopy，未导出字段与引用字段全保，func/chan 不再被跳过

@@ -1,7 +1,6 @@
 package nacos
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/common/constant"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
+	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -33,9 +33,10 @@ func buildNacosConfig(cfg Bootstrap) ([]constant.ServerConfig, *constant.ClientC
 	// serverPort+1000），非 0 时必须落在 1..65535，否则推迟到 SDK
 	// 拨号期才暴露（fail-late）。
 	if cfg.GrpcPort > 65535 {
-		return nil, nil, fmt.Errorf(
-			"invalid nacos grpc_port %d (must be within 1..65535 to be dialable): %w",
-			cfg.GrpcPort, registry.ErrInvalidPort)
+		return nil, nil, errors.Wrapf(
+			registry.ErrInvalidPort,
+			"invalid nacos grpc_port %d (must be within 1..65535 to be dialable)",
+			cfg.GrpcPort)
 	}
 
 	contextPath := cfg.ContextPath
@@ -79,7 +80,7 @@ func NewConfigClient(cfg Bootstrap) (config_client.IConfigClient, error) {
 		ServerConfigs: serverConfigs,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create nacos config client: %w", err)
+		return nil, errors.Wrapf(err, "create nacos config client")
 	}
 	return client, nil
 }
@@ -96,7 +97,7 @@ func NewNamingClient(cfg Bootstrap) (naming_client.INamingClient, error) {
 		ServerConfigs: serverConfigs,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create nacos naming client: %w", err)
+		return nil, errors.Wrapf(err, "create nacos naming client")
 	}
 	return client, nil
 }
@@ -113,20 +114,21 @@ func parseAddr(addr string) (string, uint64, error) {
 
 	host, portStr, err := net.SplitHostPort(hostPort)
 	if err != nil {
-		return "", 0, fmt.Errorf("invalid nacos addr %q: %w", addr, err)
+		return "", 0, errors.Wrapf(err, "invalid nacos addr %q", addr)
 	}
 	port, err := strconv.ParseUint(portStr, 10, 64)
 	if err != nil {
-		return "", 0, fmt.Errorf("invalid nacos port in %q: %w", addr, err)
+		return "", 0, errors.Wrapf(err, "invalid nacos port in %q", addr)
 	}
 	// #197：端口范围 fail-closed（与 registry.ParseAddr 的 #104 同口径、
 	// 复用同一 sentinel）——此前只做语法校验，0/70000 直通 ServerConfig，
 	// 失败推迟到首次 GetConfig/Register 的 SDK 拨号期才暴露，报错形态是
 	// 连接错误、不点名「端口越界」（fail-late 而非 silent-success）。
 	if port < 1 || port > 65535 {
-		return "", 0, fmt.Errorf(
-			"invalid nacos port %d in %q (must be within 1..65535 to be dialable): %w",
-			port, addr, registry.ErrInvalidPort)
+		return "", 0, errors.Wrapf(
+			registry.ErrInvalidPort,
+			"invalid nacos port %d in %q (must be within 1..65535 to be dialable)",
+			port, addr)
 	}
 	return host, port, nil
 }

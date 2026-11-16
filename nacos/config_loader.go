@@ -1,7 +1,6 @@
 package nacos
 
 import (
-	"fmt"
 	"reflect"
 	"runtime/debug"
 	"sync/atomic"
@@ -9,6 +8,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/reflectx"
 	"github.com/oekit/registry/configbridge"
 
@@ -29,7 +29,7 @@ func LoadAndMerge[T any](client config_client.IConfigClient, cfg Bootstrap, loca
 		// #196：错误面与请求面同源（GroupOrDefault）——此前用裸 cfg.Group，
 		// 空分组时实际请求 DEFAULT_GROUP、消息却渲染成 "[/app.yaml]"，
 		// 按消息里的分组去控制台查会查不到。
-		return fmt.Errorf("get nacos config [%s/%s]: %w", cfg.GroupOrDefault(), cfg.DataId, err)
+		return errors.Wrapf(err, "get nacos config [%s/%s]", cfg.GroupOrDefault(), cfg.DataId)
 	}
 
 	if content == "" {
@@ -39,7 +39,7 @@ func LoadAndMerge[T any](client config_client.IConfigClient, cfg Bootstrap, loca
 
 	var remote T
 	if err := yaml.Unmarshal([]byte(content), &remote); err != nil {
-		return fmt.Errorf("unmarshal nacos config: %w", err)
+		return errors.Wrapf(err, "unmarshal nacos config")
 	}
 
 	config.OverlayMerge(local, &remote)
@@ -121,7 +121,7 @@ func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T
 	if err != nil {
 		close(stop) // 注册失败：dispatcher 在本轮处理后退出，不驻留泄漏
 		log.Error("listen config failed", logx.ErrKey, err)
-		return fmt.Errorf("nacos: listen config [%s/%s]: %w", cfg.GroupOrDefault(), cfg.DataId, err)
+		return errors.Wrapf(err, "nacos: listen config [%s/%s]", cfg.GroupOrDefault(), cfg.DataId)
 	}
 	return nil
 }

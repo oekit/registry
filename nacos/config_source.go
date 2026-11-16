@@ -2,12 +2,12 @@ package nacos
 
 import (
 	"context"
-	"fmt"
 	"runtime/debug"
 	"sync/atomic"
 
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry/configbridge"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
@@ -53,7 +53,7 @@ func (s *ConfigSource) Read() ([]byte, error) {
 	})
 	if err != nil {
 		// #196：错误面与请求面同源（GroupOrDefault），口径同 LoadAndMerge。
-		return nil, fmt.Errorf("get nacos config [%s/%s]: %w", s.cfg.GroupOrDefault(), s.cfg.DataId, err)
+		return nil, errors.Wrapf(err, "get nacos config [%s/%s]", s.cfg.GroupOrDefault(), s.cfg.DataId)
 	}
 	return []byte(content), nil
 }

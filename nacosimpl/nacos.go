@@ -2,11 +2,11 @@ package nacos
 
 import (
 	"context"
-	"fmt"
 	"maps"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -52,7 +52,7 @@ func toInstances(serviceName string, src []model.Instance) []registry.Instance {
 
 // wrapErr 包装错误并附带 Nacos 上下文信息。
 func wrapErr(op, service string, err error) error {
-	return fmt.Errorf("registry/nacos: %s [%s]: %w", op, service, err)
+	return errors.Wrapf(err, "registry/nacos: %s [%s]", op, service)
 }
 
 // invokeWithCtx 以 ctx 感知方式执行一次无 ctx 入参的 SDK 调用（#65）。
@@ -85,7 +85,7 @@ func invokeWithCtx[T any](ctx context.Context, fn func() (T, error)) (T, error) 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				ch <- result{zero, fmt.Errorf("nacos sdk call panicked: %v", r)}
+				ch <- result{zero, errors.Newf("nacos sdk call panicked: %v", r)}
 			}
 		}()
 		v, err := fn()

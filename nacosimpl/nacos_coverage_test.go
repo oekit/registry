@@ -239,6 +239,57 @@ func TestRegistrar_Register_ReturnedFalse(t *testing.T) {
 	}
 }
 
+// TestRegistrar_Register_InvalidPort covers the #215 local port guard:
+// callers using Registrar directly bypass ParseAddr/buildInstance, so a
+// negative port must fail fast with ErrInvalidPort instead of silently
+// overflowing uint64(inst.Port) into 18446744073709551615 inside the SDK
+// param. The SDK call must not be attempted at all.
+func TestRegistrar_Register_InvalidPort(t *testing.T) {
+	called := false
+	stub := &stubNamingClient{
+		regInstanceFunc: func(_ vo.RegisterInstanceParam) (bool, error) {
+			called = true
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+
+	for _, port := range []int{-1, 0, 65536} {
+		err := r.Register(context.Background(), registry.Instance{Service: "s", IP: "1.1.1.1", Port: port})
+		if err == nil {
+			t.Fatalf("expected error for port %d, got nil", port)
+		}
+		if !errors.Is(err, ErrInvalidPort) {
+			t.Errorf("expected errors.Is(err, ErrInvalidPort) for port %d, got: %v", port, err)
+		}
+		if called {
+			t.Errorf("SDK RegisterInstance must not be called for invalid port %d", port)
+			called = false
+		}
+	}
+}
+
+// TestRegistrar_Register_PortBoundaries pins the valid range [1, 65535]:
+// both ends must pass through to the SDK untouched.
+func TestRegistrar_Register_PortBoundaries(t *testing.T) {
+	var ports []uint64
+	stub := &stubNamingClient{
+		regInstanceFunc: func(p vo.RegisterInstanceParam) (bool, error) {
+			ports = append(ports, p.Port)
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+	for _, port := range []int{1, 65535} {
+		if err := r.Register(context.Background(), registry.Instance{Service: "s", IP: "1.1.1.1", Port: port}); err != nil {
+			t.Errorf("Register port %d: %v", port, err)
+		}
+	}
+	if len(ports) != 2 || ports[0] != 1 || ports[1] != 65535 {
+		t.Errorf("expected SDK ports [1 65535], got %v", ports)
+	}
+}
+
 // TestRegistrar_Deregister_HappyPath covers the Deregister happy path.
 func TestRegistrar_Deregister_HappyPath(t *testing.T) {
 	called := false

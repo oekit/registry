@@ -20,7 +20,7 @@ require (
 
 require (
 	github.com/oekit/concurrency v0.39.0
-	github.com/oekit/registry v0.6.2
+	github.com/oekit/registry v0.7.0
 )
 
 require (

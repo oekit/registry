@@ -1,3 +1,9 @@
+## [v0.7.0] — 2026-11-18
+
+- 导出 DefaultGroup/DefaultInstanceWeight 常量收口,消除两仓 6+ 处硬编码靠注释互指(#214);nacosimpl Registrar 入口补端口校验 ErrInvalidPort,负端口不再 uint64 溢出(#215)
+
+关联问题单：registry#214、registry#215。
+
 ## [v0.6.2] — 2026-11-16
 
 - refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至最新已发布

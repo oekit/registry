@@ -130,7 +130,7 @@ var _ registry.Subscriber = (*Subscriber)(nil)
 type SubscriberOption func(*Subscriber)
 
 // WithSubscriberGroup 设置订阅器使用的默认服务分组。
-// 默认值 "DEFAULT_GROUP"。
+// 默认值 [registry.DefaultGroup]。
 func WithSubscriberGroup(group string) SubscriberOption {
 	return func(s *Subscriber) { s.group = group }
 }
@@ -144,7 +144,7 @@ func NewSubscriber(client naming_client.INamingClient, opts ...SubscriberOption)
 	}
 	s := &Subscriber{
 		client:   client,
-		group:    "DEFAULT_GROUP",
+		group:    registry.DefaultGroup,
 		subs:     make(map[string][]*vo.SubscribeParam),
 		lastErrs: make(map[string]error),
 		pushNano: make(map[string]int64),

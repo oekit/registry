@@ -18,6 +18,14 @@ var errDeregisterReturnedFalse = errors.New("nacos deregister returned false")
 // ErrNilClient 表示构造时传入了 nil 的 SDK client。
 var ErrNilClient = errors.New("registry/nacos: client must be non-nil")
 
+// ErrInvalidPort 表示 Register 传入的实例端口不在合法范围 [1, 65535] 内。
+//
+// #215：Instance.Port 是 int，负端口经两道前置门（sdbridge 的 ParseAddr、
+// nns 的 buildInstance）本可被拦，但直用 Registrar 的调用方绕过它们后，
+// uint64(inst.Port) 会静默溢出成 18446744073709551615 注册进 Nacos——
+// 本地防护必须存在，不能依赖上游调用链。
+var ErrInvalidPort = errors.New("registry/nacos: port out of range [1, 65535]")
+
 // Registrar 实现 [registry.Registrar] 接口，基于 Nacos naming client。
 //
 // 实例以临时模式（Ephemeral=true，心跳维持）注册，适合 AP 场景。
@@ -34,7 +42,7 @@ var _ registry.Registrar = (*Registrar)(nil)
 type RegistrarOption func(*Registrar)
 
 // WithRegistrarGroup 设置注册器使用的默认服务分组。
-// 默认值 "DEFAULT_GROUP"。
+// 默认值 [registry.DefaultGroup]。
 func WithRegistrarGroup(group string) RegistrarOption {
 	return func(r *Registrar) { r.group = group }
 }
@@ -54,7 +62,7 @@ func NewRegistrar(client naming_client.INamingClient, opts ...RegistrarOption) (
 	}
 	r := &Registrar{
 		client: client,
-		group:  "DEFAULT_GROUP",
+		group:  registry.DefaultGroup,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -86,9 +94,16 @@ func (r *Registrar) resolveGroupCluster(inst registry.Instance) (string, string)
 // 竞速方式兜底——ctx 已取消/超时时快速失败返回 ctx.Err()（不发起或不再等待
 // SDK 调用）；SDK 调用若已在进行会在后台自行完成（结果丢弃）。
 func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error {
+	// #215：端口本地防护——uint64(inst.Port) 对负端口会静默溢出成
+	// 18446744073709551615（ParseAddr/buildInstance 两道前置门可被直调
+	// 绕过），入口处校验而非依赖上游调用链。
+	if inst.Port <= 0 || inst.Port > 65535 {
+		return wrapErr("register", inst.Service, ErrInvalidPort)
+	}
+
 	weight := inst.Weight
 	if weight <= 0 {
-		weight = 10
+		weight = registry.DefaultInstanceWeight
 	}
 
 	groupName, clusterName := r.resolveGroupCluster(inst)

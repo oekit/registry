@@ -28,7 +28,7 @@ var _ registry.Discoverer = (*Discoverer)(nil)
 type DiscovererOption func(*Discoverer)
 
 // WithDiscovererGroup 设置发现器使用的默认服务分组。
-// 默认值 "DEFAULT_GROUP"。
+// 默认值 [registry.DefaultGroup]。
 func WithDiscovererGroup(group string) DiscovererOption {
 	return func(d *Discoverer) { d.group = group }
 }
@@ -48,7 +48,7 @@ func NewDiscoverer(client naming_client.INamingClient, opts ...DiscovererOption)
 	}
 	d := &Discoverer{
 		client: client,
-		group:  "DEFAULT_GROUP",
+		group:  registry.DefaultGroup,
 	}
 	for _, opt := range opts {
 		opt(d)

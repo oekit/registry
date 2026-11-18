@@ -1,6 +1,6 @@
 # registry
 
-> 注册发现与配置基础设施——SPI/Nacos 实现/Nacos 配置源/sdbridge
+> 注册发现与配置基础设施——SPI/Nacos 实现/Nacos 配置源/sdbridge/instancewatcher
 
 > 🌐 项目主页：**https://oekit.github.io/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
 > 🤖 AI Agent：本仓规范与硬规则见 [AGENTS.md](AGENTS.md)；机器可读索引见 [llms.txt](https://oekit.github.io/llms.txt)（接口签名以源码为准）。
@@ -35,7 +35,8 @@ go get github.com/oekit/registry/nacos@v0.2.0
 |---|---|---|
 | `registry`（模块根） | SPI：`Registrar`/`Discoverer`/`Subscriber`/`ConfigStore` + 实例模型 + 注册地址解析（netutil）。hertz/kitex 适配器面向它编程。v0.4.0 起自 `registry/registry` 子目录提升至模块根。**零第三方依赖** | `github.com/oekit/registry` |
 | `nacosimpl` | Nacos SPI 实现（nacos-sdk-go v2；原 `registry/registry/nacos`） | `github.com/oekit/registry/nacosimpl`（嵌套模块） |
-| `sdbridge` | 服务发现适配器共享核心（拉取+校验+错误包装），oekit/hertz 与 oekit/kitex 复用 | `github.com/oekit/registry` |
+| `sdbridge` | 服务发现适配器共享核心（拉取+校验+错误包装；#216 起另收口注册预算 RegisterWithBudget/DeregisterWithBudget、端点转换 InstanceEndpoint、权重兜底 WeightOrDefault、构造期 nil fail-fast EnsureNotNil），oekit/hertz 与 oekit/kitex 复用 | `github.com/oekit/registry` |
+| `instancewatcher` | 实例轮询 watcher（自 hertz/nns/health.go 整段迁入，#319；排序 diff + 事件异步派发 + 深拷贝纪律 + inflight 防挂死），hertz/nns 保留 re-export 薄壳；依赖 logx + concurrency/async（矩阵内零重依赖，根仓仍零第三方） | `github.com/oekit/registry` |
 | `registrymocks` | 四接口的统一测试 mock | `github.com/oekit/registry` |
 | `nacos` | Nacos 客户端门面（nns 默认构造用） | `github.com/oekit/registry/nacos`（嵌套模块） |
 

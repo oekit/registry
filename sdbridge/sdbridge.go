@@ -51,8 +51,10 @@ func (e *noInstancesError) Error() string { return fmt.Sprintf("no instances for
 func (e *noInstancesError) Unwrap() error { return registry.ErrNoInstances }
 
 // ToInstance 从框架注册信息的通用字段构造 [registry.Instance]，
-// weight <= 0 时使用 defaultWeight 兜底。内部委托 [registry.InfoFrom]，
-// 作为 4 个 registry.go 适配文件权重兜底逻辑的唯一入口。
+// weight<=0 时回退 defaultWeight，defaultWeight 也非法（<=0）时兜底
+// [registry.DefaultInstanceWeight]——恒正，与 [WeightOrDefault] 同口径
+// （#230，兜底链实际三级实现在 [registry.InfoFrom]）。内部委托
+// [registry.InfoFrom]，作为 4 个 registry.go 适配文件权重兜底逻辑的唯一入口。
 func ToInstance(name string, addr net.Addr, weight, defaultWeight int, tags map[string]string) (registry.Instance, error) {
 	return registry.InfoFrom(name, addr, weight, defaultWeight, tags)
 }
@@ -78,7 +80,8 @@ func InstanceEndpoint(inst registry.Instance) (network, addr string) {
 // 实例 fail-closed 503，#92 教训）。
 //
 // 消费方：kitex/registry、hertz/registry 的 convert.go（后续接入，替换
-// 各自内联的 weight <= 0 分支）。
+// 各自内联的 weight <= 0 分支）与 nacosimpl Registrar 的注册钳制
+// （#230 收编第三份手写副本；写侧与读侧同口径，防线不再靠副本互救）。
 func WeightOrDefault(weight, defaultWeight float64) float64 {
 	if weight > 0 {
 		return weight

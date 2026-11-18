@@ -299,6 +299,42 @@ func TestInfoFrom_PropagatesLoopbackRejection(t *testing.T) {
 	}
 }
 
+// TestInfoFrom_WeightFallbackChain #230 回归：权重兜底链三级收口恒正——
+// weight<=0 回退 defaultWeight，defaultWeight 也非法时兜底 DefaultInstanceWeight。
+// 修复前第二级之后无兜底，defaultWeight 非法时 Weight<=0 的实例直接写出
+// SPI（此前只有 Nacos 路径靠 nacosimpl 手写钳制救下）。
+func TestInfoFrom_WeightFallbackChain(t *testing.T) {
+	addr := &net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 8080}
+	tests := []struct {
+		name          string
+		weight        int
+		defaultWeight int
+		want          float64
+	}{
+		{"positive weight", 20, 10, 20},
+		{"zero weight falls to default", 0, 7, 7},
+		{"negative weight falls to default", -3, 7, 7},
+		{"zero weight and zero default fall to global default", 0, 0, DefaultInstanceWeight},
+		{"negative weight and negative default fall to global default", -1, -5, DefaultInstanceWeight},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst, err := InfoFrom("svc", addr, tt.weight, tt.defaultWeight, nil)
+			if err != nil {
+				t.Fatalf("InfoFrom: %v", err)
+			}
+			if inst.Weight != tt.want {
+				t.Errorf("Weight = %v, want %v", inst.Weight, tt.want)
+			}
+			// 恒正是兜底链的产出契约（#92：非正权重透传给框架负载均衡器
+			// 会被判 invalid weight fail-closed 503）。
+			if inst.Weight <= 0 {
+				t.Errorf("Weight = %v, want > 0", inst.Weight)
+			}
+		})
+	}
+}
+
 // hostPortAddr 是可注入任意 host 形态的 net.Addr 测试桩：net.TCPAddr 只能
 // 装合法 IP（或 nil），「域名/垃圾串」形态的 host 必须走自定义 Addr 注入。
 type hostPortAddr struct{ s string }

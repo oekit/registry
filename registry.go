@@ -154,6 +154,13 @@ func WithGroup(group string) RegisterOptionFunc {
 // name 是服务名称，addr 是注册地址（如 *net.TCPAddr），
 // weight 是实例权重（<=0 时使用 defaultWeight），tags 是元数据。
 // defaultWeight 用于 weight<=0 的回退值。
+//
+// 权重兜底链三级恒正（#230）：weight<=0 → defaultWeight，defaultWeight 也
+// 非法（<=0）时兜底 [DefaultInstanceWeight]——与读侧 sdbridge.WeightOrDefault
+// 同口径（sdbridge 反向依赖本包，import 成环，此处同口径内联而非委托）。
+// 此前第二级之后无兜底，defaultWeight 非法时会把 Weight<=0 的实例写出
+// SPI，只有 Nacos 路径靠 nacosimpl 注册时的手写钳制救下，registrymocks/
+// 未来 etcd 实现无此保证——防线不能靠副本互救。
 func InfoFrom(name string, addr net.Addr, weight, defaultWeight int, tags map[string]string) (Instance, error) {
 	if name == "" {
 		return Instance{}, errors.New("registry: service name is empty")
@@ -165,6 +172,9 @@ func InfoFrom(name string, addr net.Addr, weight, defaultWeight int, tags map[st
 	w := weight
 	if w <= 0 {
 		w = defaultWeight
+	}
+	if w <= 0 {
+		w = int(DefaultInstanceWeight)
 	}
 	return Instance{
 		Service:  name,

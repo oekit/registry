@@ -1,3 +1,9 @@
+## [v0.8.0] — 2026-11-18
+
+- sdbridge 新增注册预算与构造帮助:RegisterWithBudget/DeregisterWithBudget(DefaultRegisterBudget=3s,kitex#191/#212 口径收口)/InstanceEndpoint/WeightOrDefault/EnsureNotNil——根治 hertz/kitex 四 adapter 孪生漂移(#216);新包 instancewatcher:InstanceWatcher 实例轮询 watcher 自 hertz/nns/health.go 迁入,零框架依赖机制件归位(#319)
+
+关联问题单：registry#216。
+
 ## [v0.7.0] — 2026-11-18
 
 - 导出 DefaultGroup/DefaultInstanceWeight 常量收口,消除两仓 6+ 处硬编码靠注释互指(#214);nacosimpl Registrar 入口补端口校验 ErrInvalidPort,负端口不再 uint64 溢出(#215)

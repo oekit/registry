@@ -85,7 +85,11 @@ func invokeWithCtx[T any](ctx context.Context, fn func() (T, error)) (T, error) 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				ch <- result{zero, errors.Newf("nacos sdk call panicked: %v", r)}
+				// panic 收编走 pkg/errors.Recovered 单源（core#136 口径）：
+				// panic 值为 error 时身份经 Unwrap 透传（errors.Is/As 可达），
+				// 此前 Newf %v 拍平会丢身份；「nacos sdk call panicked」
+				// 语义前缀经 Wrap 保留。
+				ch <- result{zero, errors.Wrap(errors.Recovered(r), "nacos sdk call panicked")}
 			}
 		}()
 		v, err := fn()

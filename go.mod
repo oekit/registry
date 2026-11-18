@@ -10,10 +10,10 @@ go 1.26.0
 //
 // 拆分的理由（实测）：nacos-sdk-go/v2 单独引入即拖进 63 个第三方模块；
 // 不隔离时，**只想要注册发现接口**的消费方也会被连带拖进去。
-require github.com/oekit/core v0.16.0
+require github.com/oekit/core v0.17.0
 
 // registrymocks 直接消费 pkg/errors.Recovered（#158 panic 收编单源）⇒ pkg 转直接依赖。
-require github.com/oekit/pkg v0.53.0
+require github.com/oekit/pkg v0.54.0
 
 // instancewatcher（#319 自 hertz/nns/health.go 迁入的实例轮询 watcher）依赖
 // logx（日志门面，自身零 require）与 concurrency/async（GoSafe panic 收编）。

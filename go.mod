@@ -20,6 +20,6 @@ require github.com/oekit/pkg v0.54.0
 // 两者均为矩阵内零重依赖包，根仓「零第三方依赖」承诺不破——go.sum 仅新增
 // 这两个模块自身，无任何 golang.org/... 等第三方代码进入根模块构建图。
 require (
-	github.com/oekit/concurrency v0.39.0
+	github.com/oekit/concurrency v0.39.1
 	github.com/oekit/logx v0.12.0
 )

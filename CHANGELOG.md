@@ -1,3 +1,13 @@
+## [v0.8.1] — 2026-11-19
+
+- 第二轮重复逻辑深挖审计（2026-11-19）registry 修复与收敛：
+
+- fix: 权重兜底链收口恒正单口径——InfoFrom 补第三级兜底（w<=dw<=0 落 DefaultInstanceWeight），与 sdbridge.WeightOrDefault 同口径；此前 defaultWeight 也非法时产出 Weight<=0 实例写出 SPI，防线靠 nacosimpl 手写钳制副本互救；nacosimpl 手写钳制收编为 WeightOrDefault 引用（#230）
+- fix: nacosimpl invokeWithCtx 的 panic 收编由 %v 拍平改走 pkg/errors.Recovered 单源——panic 值为 error 时身份经 Unwrap 透传，errors.Is/As 可达（core#136 口径，B13 同族残留面）（#231）
+- refactor: instancewatcher.Start 入口与 sdbridge.withBudget 手写 nil-ctx 兜底接 contextx.OrBackground（#231）
+
+关联问题单：registry#230、registry#231。
+
 ## [v0.8.0] — 2026-11-18
 
 - sdbridge 新增注册预算与构造帮助:RegisterWithBudget/DeregisterWithBudget(DefaultRegisterBudget=3s,kitex#191/#212 口径收口)/InstanceEndpoint/WeightOrDefault/EnsureNotNil——根治 hertz/kitex 四 adapter 孪生漂移(#216);新包 instancewatcher:InstanceWatcher 实例轮询 watcher 自 hertz/nns/health.go 迁入,零框架依赖机制件归位(#319)

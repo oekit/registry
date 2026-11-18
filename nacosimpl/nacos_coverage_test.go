@@ -889,6 +889,39 @@ func TestInvokeWithCtx_PanicBecomesError(t *testing.T) {
 	}
 }
 
+// sdkPanicError 是 panic 身份测试用的自定义错误类型：指针可判同一，
+// errors.As 取回的必须是 panic 出去的**同一个**值，而非等值新实例。
+type sdkPanicError struct{ msg string }
+
+func (e *sdkPanicError) Error() string { return e.msg }
+
+// TestInvokeWithCtx_PanicIdentityPreserved panic 值为 error 时身份必须
+// 透传（#231，core#136 单源口径）：收编走 pkg/errors.Recovered 后
+// errors.As 能取回原 error 值、errors.Is 直达 sentinel——此前 Newf %v
+// 拍平成纯文本，两者均不可达。
+func TestInvokeWithCtx_PanicIdentityPreserved(t *testing.T) {
+	boom := &sdkPanicError{msg: "sdk exploded"}
+	_, err := invokeWithCtx(context.Background(), func() (bool, error) {
+		panic(boom)
+	})
+	if err == nil {
+		t.Fatal("expected error from panicked SDK call, got nil")
+	}
+	var got *sdkPanicError
+	if !errors.As(err, &got) {
+		t.Fatalf("errors.As cannot retrieve the original error value, err = %v", err)
+	}
+	if got != boom {
+		t.Fatalf("errors.As retrieved %p, want the exact panicked value %p", got, boom)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("errors.Is(err, panicked value) = false, err = %v", err)
+	}
+	if !contains(err.Error(), "panicked") {
+		t.Errorf("err = %v, want panic semantic prefix preserved", err)
+	}
+}
+
 func indexOfSub(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

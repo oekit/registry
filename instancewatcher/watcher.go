@@ -14,6 +14,7 @@ import (
 
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/registry"
 	"github.com/oekit/registry/sdbridge"
 )
@@ -112,7 +113,11 @@ func NewInstanceWatcher(discoverer registry.Discoverer, opts ...WatchOption) *In
 }
 
 // Start 启动 watcher，定期轮询服务实例状态直到上下文取消或调用 Stop。
+// nil ctx 按 Background 处理（core#159 全仓口径）——nil 进 select 的
+// ctx.Done() 直接 nil 解引用 panic，兜底后只能经 Stop 退出。
 func (h *InstanceWatcher) Start(ctx context.Context) {
+	// 口径单源：pkg/contextx.OrBackground（#231）。
+	ctx = contextx.OrBackground(ctx)
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
 

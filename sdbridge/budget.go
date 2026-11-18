@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
@@ -57,12 +58,10 @@ func DeregisterWithBudget(ctx context.Context, reg registry.Registrar, inst regi
 }
 
 // withBudget 规范化 ctx 与预算并派生带截止时间的 ctx（Register/Deregister
-// WithBudget 的共同前段）：nil ctx 回退 Background，非正预算回退
-// [DefaultRegisterBudget]。
+// WithBudget 的共同前段）：nil ctx 回退 Background（单源收敛到
+// pkg/contextx.OrBackground，#231），非正预算回退 [DefaultRegisterBudget]。
 func withBudget(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = contextx.OrBackground(ctx)
 	if budget <= 0 {
 		budget = DefaultRegisterBudget
 	}

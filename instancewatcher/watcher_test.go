@@ -161,6 +161,38 @@ func TestInstanceWatcher_StartStop(t *testing.T) {
 	}
 }
 
+// TestInstanceWatcher_StartNilCtx nil ctx 不得 panic（#231）：入口经
+// contextx.OrBackground 兜底为 Background 后正常轮询，经 Stop 正常退出。
+// 修复前 nil 进 select 的 ctx.Done() 直接 nil 解引用 panic。
+func TestInstanceWatcher_StartNilCtx(t *testing.T) {
+	disc := &registrymocks.Discoverer{InstancesMap: map[string][]registry.Instance{
+		"svc-a": {{IP: "10.0.0.1", Port: 8080}},
+	}}
+	h := NewInstanceWatcher(disc,
+		WithWatchInterval(50*time.Millisecond),
+		WithWatchServices("svc-a"),
+	)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#231）
+		h.Start(nil)
+	}()
+
+	h.Stop()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start(nil) 未在 Stop 后返回（nil ctx 应按 Background 正常运转）")
+	}
+
+	instances := h.GetHealthyInstances("svc-a")
+	if len(instances) != 1 {
+		t.Fatalf("len(instances) = %d, want 1", len(instances))
+	}
+}
+
 func TestInstanceWatcher_CallbackTriggered(t *testing.T) {
 	disc := &registrymocks.Discoverer{InstancesMap: map[string][]registry.Instance{
 		"svc-a": {{IP: "10.0.0.1", Port: 8080}},

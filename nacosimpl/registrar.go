@@ -7,6 +7,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/naming_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/oekit/registry"
+	"github.com/oekit/registry/sdbridge"
 )
 
 // errRegisterReturnedFalse 表示 Nacos SDK 注册返回 false（非 error）。
@@ -101,10 +102,11 @@ func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error 
 		return wrapErr("register", inst.Service, ErrInvalidPort)
 	}
 
-	weight := inst.Weight
-	if weight <= 0 {
-		weight = registry.DefaultInstanceWeight
-	}
+	// #230：权重兜底收编单源——此前这里是第三份手写钳制
+	// （weight<=0→DefaultInstanceWeight），与 sdbridge.WeightOrDefault、
+	// InfoFrom 各自为政。本 Registrar 无独立的二级默认权重，defaultWeight
+	// 传 0（非法）直落全局默认，行为与原手写钳制一致。
+	weight := sdbridge.WeightOrDefault(inst.Weight, 0)
 
 	groupName, clusterName := r.resolveGroupCluster(inst)
 

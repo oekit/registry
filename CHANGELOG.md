@@ -1,3 +1,8 @@
+## [v0.8.2] — 2026-11-20
+
+- fix(nacosimpl): invokeWithCtx 公共漏斗入口补 nil-ctx 兜底——#231 同文件只修 panic 半边，Discoverer/ConfigStore/Registrar 全部 SPI 入口经此漏斗；ConfigStore.ListenConfig/StopListenConfig 独立预检与 nacos ConfigSource.Watch 一并兜底（#240）
+docs(sdbridge): import allowlist 对齐实况（pkg 已进禁令域豁免）；三处"（后续接入）"进度注收敛为点名四个消费文件（#241）
+
 ## [v0.8.1] — 2026-11-19
 
 - 第二轮重复逻辑深挖审计（2026-11-19）registry 修复与收敛：

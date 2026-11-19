@@ -7,6 +7,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/registry"
 	"github.com/oekit/registry/configbridge"
 )
@@ -106,6 +107,9 @@ func (s *ConfigStore) GetConfig(ctx context.Context, dataID, group string) (stri
 // 监听挂上后派发链持续投递，ctx 取消不会停止监听，需要停监听走
 // [ConfigStore.StopListenConfig]。
 func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, onChange func(data string)) error {
+	// nil ctx 按 Background 处理（registry#240）：预检不在 invokeWithCtx
+	// 漏斗内（#143 本地登记语义），nil 进 ctx.Err() 同样 nil 解引用 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -136,6 +140,9 @@ func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, on
 func (s *ConfigStore) StopListenConfig(ctx context.Context, dataID, group string) error {
 	// ctx 预检（#143 口径）：即使本封装无订阅（no-op 路径），pre-canceled
 	// 也保持快速失败——与 ListenConfig 的入口预检对称。
+	// nil ctx 按 Background 处理（registry#240）：预检不在 invokeWithCtx
+	// 漏斗内，nil 进 ctx.Err() 同样 nil 解引用 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}

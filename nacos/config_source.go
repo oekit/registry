@@ -7,6 +7,7 @@ import (
 
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry/configbridge"
 
@@ -75,6 +76,11 @@ func (s *ConfigSource) Read() ([]byte, error) {
 // 「配置中心改了下不去」的故障排查时不会先想到看启动日志。失败即需要
 // fail-fast 的调用方应在 Watch 后检查 Err()。
 func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
+	// nil ctx 按 Background 处理（core#159 全仓口径，registry#240）：本方法
+	// 实现 core config.ConfigSource（void 签名不可改），派发闭包与收尾
+	// goroutine 都直接 select/<-ctx.Done()，nil 进来即 nil 解引用 panic——
+	// void 面无法经返回值上抛，入口兜底是唯一出口。
+	ctx = contextx.OrBackground(ctx)
 	// registry#177：监听经 configbridge 多播桥——SDK 的 ListenConfig 按 key
 	// 单槽（同 key 二次注册新回调被静默丢弃、Cancel 按 key 整删互杀），
 	// 桥把单槽抬升为多播：与同 client 的 config_loader/ConfigStore 共享

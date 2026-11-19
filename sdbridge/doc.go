@@ -13,11 +13,11 @@
 // [RegisterWithBudget] / [DeregisterWithBudget]，缺省预算 [DefaultRegisterBudget]
 // 与 kitex#191 一致。配套帮助：[InstanceEndpoint]（IP/Port→JoinHostPort
 // 单源）、[WeightOrDefault]（weight<=0 回填，引用根包 DefaultInstanceWeight）、
-// [EnsureNotNil]（构造期 nil fail-fast，hertz#219 口径单源）。消费方为
-// hertz/kitex 四个 adapter（后续接入）。
+// [EnsureNotNil]（构造期 nil fail-fast，hertz#219 口径单源）。消费方：
+// kitex/registry、kitex/nns、hertz/registry、hertz/nns 四个 adapter 的 registry.go。
 //
-// 本包只允许 import 标准库与 ekit/registry（oekit 平台契约 github.com/oekit/oekit.github.io/blob/main/docs/PLATFORM_CONTRACT.md），
-// 禁止依赖 Hertz/Kitex 等具体框架。
+// 本包只允许 import 标准库与 ekit/{registry,pkg}（oekit 平台契约 github.com/oekit/oekit.github.io/blob/main/docs/PLATFORM_CONTRACT.md），
+// 禁框架依赖（禁 Hertz/Kitex 等具体框架）。
 //
 // # 用法（框架适配层侧）
 //

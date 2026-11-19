@@ -32,8 +32,7 @@ const DefaultRegisterBudget = 3 * time.Second
 // errPrefix 口径一致。
 //
 // 消费方：hertz/registry、hertz/nns、kitex/registry、kitex/nns 四个
-// registry adapter 的无 ctx Register 路径（后续接入，替换各自内联的
-// context.WithTimeout 拷贝）。
+// adapter 的 registry.go（各自内联的 context.WithTimeout 拷贝已收口至此）。
 func RegisterWithBudget(ctx context.Context, reg registry.Registrar, inst registry.Instance, budget time.Duration) error {
 	if reg == nil {
 		return errors.New("sdbridge: RegisterWithBudget requires non-nil registrar")
@@ -47,7 +46,8 @@ func RegisterWithBudget(ctx context.Context, reg registry.Registrar, inst regist
 // 预算覆盖优雅关停路径的 Deregister——注册中心不可达时最多阻塞 budget
 // （缺省 [DefaultRegisterBudget]），不再拖死关停序列。
 //
-// 消费方：同 [RegisterWithBudget]（四 adapter 后续接入）。
+// 消费方：同 [RegisterWithBudget]（hertz/registry、hertz/nns、
+// kitex/registry、kitex/nns 四个 adapter 的 registry.go）。
 func DeregisterWithBudget(ctx context.Context, reg registry.Registrar, inst registry.Instance, budget time.Duration) error {
 	if reg == nil {
 		return errors.New("sdbridge: DeregisterWithBudget requires non-nil registrar")

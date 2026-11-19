@@ -18,7 +18,7 @@ require (
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6
 	github.com/oekit/core v0.17.1 // indirect
 	github.com/oekit/logx v0.12.0
-	github.com/oekit/registry v0.8.1
+	github.com/oekit/registry v0.8.2
 )
 
 require github.com/oekit/pkg v0.55.1

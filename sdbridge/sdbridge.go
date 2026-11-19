@@ -67,8 +67,8 @@ const NetworkTCP = "tcp"
 // （[NetworkTCP]），addr 为 IP:Port（net.JoinHostPort，IPv6 自动加方括号）。
 //
 // 消费方：kitex/registry 与 hertz/registry 的实例转换
-// （InstancesToKitex / InstancesToHertz 此前各自 net.JoinHostPort 拷贝一份）
-// 及 nns 系同类转换（后续接入）。
+// （InstancesToKitex / InstancesToHertz 此前各自 net.JoinHostPort 拷贝一份）；
+// nns 侧经 kitex/nns 的 resolver 复用 InstancesToKitex 单源，不另设转换。
 func InstanceEndpoint(inst registry.Instance) (network, addr string) {
 	return NetworkTCP, inst.Addr()
 }

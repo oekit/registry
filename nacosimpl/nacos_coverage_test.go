@@ -922,6 +922,123 @@ func TestInvokeWithCtx_PanicIdentityPreserved(t *testing.T) {
 	}
 }
 
+// --- #240 回归钉（nil ctx 兜底）---
+//
+// invokeWithCtx 是 Discoverer/Registrar/ConfigStore SPI 入口的公共漏斗，
+// nil ctx 进 ctx.Err()/ctx.Done() 直接 nil 解引用 panic（#231 修了 panic
+// 收编半边，nil-ctx 半边漏了）。入口经 contextx.OrBackground 兜底为
+// Background 后正常走 SDK 调用——对照 instancewatcher 的
+// TestInstanceWatcher_StartNilCtx 形态。
+
+// TestInvokeWithCtx_NilCtx_NoPanic 漏斗本体钉：nil ctx 归一为 Background
+// 后正常执行 fn 并返回其结果（invokeWithCtxErr 经委托同享）。
+func TestInvokeWithCtx_NilCtx_NoPanic(t *testing.T) {
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	got, err := invokeWithCtx(nil, func() (string, error) { return "ok", nil })
+	if err != nil {
+		t.Fatalf("invokeWithCtx(nil): %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("invokeWithCtx(nil) = %q, want \"ok\"", got)
+	}
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := invokeWithCtxErr(nil, func() error { return nil }); err != nil {
+		t.Fatalf("invokeWithCtxErr(nil): %v", err)
+	}
+}
+
+// TestDiscoverer_Discover_NilCtx 发现面 nil ctx 不得 panic，且 SDK 调用
+// 正常执行、结果正常返回。
+func TestDiscoverer_Discover_NilCtx(t *testing.T) {
+	stub := &stubNamingClient{
+		selectInstancesFunc: func(_ vo.SelectInstancesParam) ([]model.Instance, error) {
+			return []model.Instance{{Ip: "10.0.0.1", Port: 8080, Weight: 10}}, nil
+		},
+	}
+	d, _ := NewDiscoverer(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	got, err := d.Discover(nil, "svc-a")
+	if err != nil {
+		t.Fatalf("Discover(nil): %v", err)
+	}
+	if len(got) != 1 || got[0].IP != "10.0.0.1" {
+		t.Fatalf("Discover(nil) = %+v, want 1 instance 10.0.0.1", got)
+	}
+}
+
+// TestRegistrar_Register_NilCtx 写入口 nil ctx 不得 panic，且 SDK 注册
+// 正常执行（修复前 nil 进漏斗入口的 ctx.Err() 直接 panic）。
+func TestRegistrar_Register_NilCtx(t *testing.T) {
+	called := make(chan struct{}, 1)
+	stub := &stubNamingClient{
+		regInstanceFunc: func(_ vo.RegisterInstanceParam) (bool, error) {
+			called <- struct{}{}
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := r.Register(nil, registry.Instance{Service: "s", IP: "1.1.1.1", Port: 1}); err != nil {
+		t.Fatalf("Register(nil): %v", err)
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("nil ctx 应按 Background 正常发起 SDK RegisterInstance")
+	}
+}
+
+// TestConfigStore_GetConfig_NilCtx config 读面 nil ctx 不得 panic。
+func TestConfigStore_GetConfig_NilCtx(t *testing.T) {
+	stub := &stubConfigClient{
+		getConfigFunc: func(_ vo.ConfigParam) (string, error) {
+			return "v", nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	got, err := cs.GetConfig(nil, "k", "G")
+	if err != nil {
+		t.Fatalf("GetConfig(nil): %v", err)
+	}
+	if got != "v" {
+		t.Fatalf("GetConfig(nil) = %q, want \"v\"", got)
+	}
+}
+
+// TestConfigStore_ListenStop_NilCtx 监听面 nil ctx 不得 panic：ListenConfig/
+// StopListenConfig 的 ctx.Err() 预检不在 invokeWithCtx 漏斗内（#143 本地
+// 登记语义），需要各自的 OrBackground 兜底。
+func TestConfigStore_ListenStop_NilCtx(t *testing.T) {
+	canceled := make(chan struct{}, 1)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(_ vo.ConfigParam) error { return nil },
+		cancelListenConfigFunc: func(_ vo.ConfigParam) error {
+			canceled <- struct{}{}
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := cs.ListenConfig(nil, "k", "G", func(string) {}); err != nil {
+		t.Fatalf("ListenConfig(nil): %v", err)
+	}
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := cs.StopListenConfig(nil, "k", "G"); err != nil {
+		t.Fatalf("StopListenConfig(nil): %v", err)
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("nil ctx 应按 Background 正常委托 SDK CancelListenConfig")
+	}
+}
+
 func indexOfSub(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

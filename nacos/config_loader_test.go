@@ -214,6 +214,38 @@ func TestConfigSource_Watch_CtxCancelUnregistersSDKListener(t *testing.T) {
 	}
 }
 
+// TestConfigSource_Watch_NilCtx 是 #240 的回归钉：Watch 实现 core
+// config.ConfigSource（void 签名不可改），派发闭包与收尾 goroutine 都直接
+// select/<-ctx.Done()——nil ctx 经入口 contextx.OrBackground 兜底为
+// Background 后正常注册监听、正常投递（修复前 nil 进 select 直接 nil 解引用
+// panic，对照 instancewatcher 的 TestInstanceWatcher_StartNilCtx 形态）。
+func TestConfigSource_Watch_NilCtx(t *testing.T) {
+	var fired func(namespace, group, dataId, data string)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			fired = p.OnChange
+			return nil
+		},
+	}
+	s := NewConfigSource(stub, Bootstrap{DataId: "app.yaml", Group: "G"})
+
+	delivered := 0
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	s.Watch(nil, func() { delivered++ })
+	if fired == nil {
+		t.Fatal("ListenConfig was not registered")
+	}
+
+	// 模拟 SDK 派发 goroutine 直调 OnChange（nil ctx 按 Background → 走到 onChange）。
+	fired("ns", "G", "app.yaml", "anything")
+	if delivered != 1 {
+		t.Fatalf("onChange delivered = %d, want 1（nil ctx 按 Background 正常投递）", delivered)
+	}
+	if err := s.Err(); err != nil {
+		t.Errorf("Err() = %v, want nil (listen registered fine)", err)
+	}
+}
+
 // twoFieldCfg 是 #105 回归用的双字段配置：热更回滚缺陷需要「两个不同配置项
 // 分两次变更」才暴露——第一次改 A、第二次改 B，第二次之后 A 不得退回
 // bootstrap 值。

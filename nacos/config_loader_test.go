@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -243,6 +244,39 @@ func TestConfigSource_Watch_NilCtx(t *testing.T) {
 	}
 	if err := s.Err(); err != nil {
 		t.Errorf("Err() = %v, want nil (listen registered fine)", err)
+	}
+}
+
+// TestConfigSource_Watch_ErrRecoversAfterSuccess 是 #251 的回归钉：Err() 的
+// 文档承诺是 nil = 监听已挂上，但 listenErr 此前只在失败时 Store——一次
+// 失败后即使重试成功，Err() 仍永久返回旧错误（状态面说谎，调用方按 fail-fast
+// 逻辑会一直判死）。成功路径必须把失败状态清零。
+func TestConfigSource_Watch_ErrRecoversAfterSuccess(t *testing.T) {
+	fail := true
+	stub := &stubConfigClient{
+		listenConfigFunc: func(vo.ConfigParam) error {
+			if fail {
+				return errors.New("nacos temporarily unavailable")
+			}
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := NewConfigSource(stub, Bootstrap{DataId: "app.yaml", Group: "G"})
+
+	s.Watch(ctx, func() {})
+	if err := s.Err(); err == nil {
+		t.Fatal("Err() = nil, want 首次注册失败错误")
+	} else if !strings.Contains(err.Error(), "temporarily unavailable") {
+		t.Fatalf("Err() = %v, want 原始注册错误", err)
+	}
+
+	// 故障恢复后重试：桥在失败时已回滚本地表项，本次会重新调 SDK ListenConfig。
+	fail = false
+	s.Watch(ctx, func() {})
+	if err := s.Err(); err != nil {
+		t.Fatalf("#251: 注册成功后 Err() = %v, want nil（陈旧的失败状态未清理）", err)
 	}
 }
 
@@ -605,6 +639,143 @@ func TestLoaderAndSource_ShareBridgeSameKey(t *testing.T) {
 	for loaderGot.Load() < 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("★ source 取消后 loader 仍应热更（按 key 互杀回归）")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitGoroutinesBack 等待 goroutine 数回落到基线（#251 泄漏测试助手）。
+// 超时说明收尾路径没有把本方法启动的 goroutine 全部回收。
+func waitGoroutinesBack(t *testing.T, baseline int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		n := runtime.NumGoroutine()
+		if n <= baseline {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("#251: goroutine 未随收尾回收: now=%d baseline=%d", n, baseline)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestListenCtx_CtxCancelStopsDispatcherAndUnsubscribes 是 #251 的回归钉：
+// 此前 Listen 成功路径的 stop 永不关闭、桥订阅句柄丢弃——被取消/替换的
+// 监听留下 dispatcher goroutine、configbridge 表项与 SDK 监听，旧 onChange
+// 继续写回运行态。ListenCtx 必须在 ctx 取消后 Unsubscribe（最后一个订阅者
+// 离开触发 SDK CancelListenConfig）、停止 dispatcher，且迟到推送不再投递。
+func TestListenCtx_CtxCancelStopsDispatcherAndUnsubscribes(t *testing.T) {
+	fired := make(chan func(namespace, group, dataId, data string), 1)
+	cancelled := make(chan vo.ConfigParam, 1)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(p vo.ConfigParam) error {
+			fired <- p.OnChange
+			return nil
+		},
+		cancelListenConfigFunc: func(p vo.ConfigParam) error {
+			cancelled <- p
+			return nil
+		},
+	}
+	baseline := runtime.NumGoroutine()
+
+	var delivered atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := ListenCtx(ctx, stub, Bootstrap{DataId: "app.yaml", Group: "G"}, &hotCfg{N: 1},
+		func(*hotCfg) { delivered.Add(1) }); err != nil {
+		cancel()
+		t.Fatalf("ListenCtx: %v", err)
+	}
+	var sdkOnChange func(namespace, group, dataId, data string)
+	select {
+	case sdkOnChange = <-fired:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("ListenConfig was not registered")
+	}
+
+	cancel()
+	select {
+	case p := <-cancelled:
+		if p.DataId != "app.yaml" || p.Group != "G" {
+			t.Errorf("CancelListenConfig param = %s/%s, want app.yaml/G", p.DataId, p.Group)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("#251: ctx 取消后未摘除桥订阅（SDK CancelListenConfig 未调用）")
+	}
+	// 收尾完成后本方法启动的 dispatcher/收尾 goroutine 必须全部退出。
+	waitGoroutinesBack(t, baseline)
+
+	// 收尾后 SDK 仍可能迟到派发（或 Unsubscribe 失败后订阅被桥回滚）：
+	// 旧回调不得再入队、不得再写回运行态（阻塞派发锁/泄漏点）。
+	sdkOnChange("ns", "G", "app.yaml", "n: 2")
+	time.Sleep(50 * time.Millisecond)
+	if got := delivered.Load(); got != 0 {
+		t.Fatalf("#251: ctx 取消后旧 onChange 仍投递 %d 次", got)
+	}
+}
+
+// TestListenCtx_SubscribeFailureNoDispatcherLeak 是 #251 的另一半：注册失败
+// 路径必须同步收尾 dispatcher（此前 close(stop) 后不等待，goroutine 退出
+// 时机不可判定）。ListenCtx 返回错误时 goroutine 数已回落基线。
+func TestListenCtx_SubscribeFailureNoDispatcherLeak(t *testing.T) {
+	stub := &stubConfigClient{
+		listenConfigFunc: func(vo.ConfigParam) error { return errors.New("nacos unavailable") },
+	}
+	baseline := runtime.NumGoroutine()
+	err := ListenCtx(context.Background(), stub, Bootstrap{DataId: "app.yaml", Group: "G"},
+		&hotCfg{}, func(*hotCfg) {})
+	if err == nil {
+		t.Fatal("ListenCtx 必须上抛注册错误")
+	}
+	waitGoroutinesBack(t, baseline)
+}
+
+// TestListenCtx_RestartAfterCancel 钉住收尾后的可重启性：ctx 取消完成
+// Unsubscribe 后，同一 client 的同 key 再注册必须重新走 SDK ListenConfig
+// （桥的 bridged 状态已随最后一个订阅者离开复位），且再次取消仍能收尾。
+func TestListenCtx_RestartAfterCancel(t *testing.T) {
+	var listenN, cancelN atomic.Int32
+	stub := &stubConfigClient{
+		listenConfigFunc: func(vo.ConfigParam) error {
+			listenN.Add(1)
+			return nil
+		},
+		cancelListenConfigFunc: func(vo.ConfigParam) error {
+			cancelN.Add(1)
+			return nil
+		},
+	}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	if err := ListenCtx(ctx1, stub, Bootstrap{DataId: "app.yaml", Group: "G"}, &hotCfg{}, func(*hotCfg) {}); err != nil {
+		cancel1()
+		t.Fatalf("第一次 ListenCtx: %v", err)
+	}
+	cancel1()
+	deadline := time.Now().Add(2 * time.Second)
+	for cancelN.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("第一次取消未触发 SDK CancelListenConfig")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	if err := ListenCtx(ctx2, stub, Bootstrap{DataId: "app.yaml", Group: "G"}, &hotCfg{}, func(*hotCfg) {}); err != nil {
+		t.Fatalf("取消后重新 ListenCtx: %v", err)
+	}
+	if got := listenN.Load(); got != 2 {
+		t.Fatalf("取消后重启应重新注册 SDK 监听（listen 总 2 次）, got %d", got)
+	}
+	cancel2()
+	deadline = time.Now().Add(2 * time.Second)
+	for cancelN.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("第二次取消未触发 SDK CancelListenConfig")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

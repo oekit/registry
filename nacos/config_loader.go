@@ -1,6 +1,7 @@
 package nacos
 
 import (
+	"context"
 	"reflect"
 	"runtime/debug"
 	"sync/atomic"
@@ -8,6 +9,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/reflectx"
 	"github.com/oekit/registry/configbridge"
@@ -62,6 +64,22 @@ const listenEventQueueDepth = 128
 
 // Listen 监听 Nacos 配置变更，当配置发生变化时自动重新合并并回调 onChange。
 //
+// Deprecated: 使用 [ListenCtx]。本入口以 context.Background 注册，监听与
+// 进程同生命周期——没有停止出口：dispatcher goroutine、configbridge 订阅与
+// SDK 监听都会驻留到进程结束（registry#251）。需要可停止的生命周期时改传
+// ctx，以其取消作为收尾信号。
+func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T, onChange func(*T)) error {
+	return ListenCtx(context.Background(), client, cfg, current, onChange)
+}
+
+// ListenCtx 监听 Nacos 配置变更，当配置发生变化时自动重新合并并回调 onChange。
+//
+// 监听生命周期绑定 ctx（registry#251）：ctx 取消后先经 configbridge 摘除本
+// 订阅（最后一个订阅者离开时触发 SDK CancelListenConfig），再关闭 stop 让
+// dispatcher goroutine 退出；收尾 goroutine 中的 SDK 调用 panic 就地隔离
+// （与 config_source.Watch 的 #144 同口径）。ctx 已取消/超时时入口快速失败，
+// 不注册监听。
+//
 // 契约：
 //   - current 是注册时的基线快照；库内以「最近一次交付给 onChange 的合并
 //     结果」为下一次热更的合并基线（#105）——每次变更从上次生效值起算，
@@ -88,15 +106,22 @@ const listenEventQueueDepth = 128
 // 返回注册错误（#53）：此前 ListenConfig 失败仅 log.Error——监听根本没挂上，
 // 后续配置变更永不投递，调用方无从感知热更已失效（0.x 允许 breaking：调用方
 // 需处理返回值，失败即 fail-fast 或自行告警）。
-func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T, onChange func(*T)) error {
+func ListenCtx[T any](ctx context.Context, client config_client.IConfigClient, cfg Bootstrap, current *T, onChange func(*T)) error {
+	// nil ctx 按 Background 处理（core#159 / registry#240 全仓口径）。
+	ctx = contextx.OrBackground(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	latest := &atomic.Pointer[T]{}
 	latest.Store(current)
 
 	events := make(chan configEvent, listenEventQueueDepth)
-	// 注册失败时收尾 dispatcher（否则空转驻留）；正常路径 stop 永不关闭，
-	// dispatcher 与 SDK 监听同生命周期（SDK 无按事件反注册 API）。
+	// stop 是 dispatcher 的退出信号：注册失败与 ctx 取消两条路径都会关闭它。
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	async.GoSafe(func() {
+		defer close(done)
 		for {
 			select {
 			case ev := <-events:
@@ -108,20 +133,59 @@ func Listen[T any](client config_client.IConfigClient, cfg Bootstrap, current *T
 	})
 	// registry#177：经 configbridge 多播桥注册——与同 client 的 config_source
 	// 共享一张表（此前两处各调 SDK ListenConfig，同 key 二次注册新回调被
-	// 静默丢弃、任一取消按 key 整删互杀）。本路径无反注册 API（SDK 无按
-	// 事件反注册，注释见上），句柄随桥表驻留，与监听同生命周期。
-	_, err := configbridge.For(client, bridgeHooks(client)).Subscribe(
+	// 静默丢弃、任一取消按 key 整删互杀）。
+	//
+	// #251：句柄必须保留——ctx 取消时按句柄精确摘除本订阅（最后一个订阅者
+	// 离开才触发 SDK CancelListenConfig）。此前句柄丢弃且成功路径 stop 永不
+	// 关闭：dispatcher goroutine、桥订阅与 SDK 监听全部进程级泄漏，动态
+	// Listen 每次泄漏一套，旧 onChange 继续写回运行态。
+	bridge := configbridge.For(client, bridgeHooks(client))
+	id, err := bridge.Subscribe(
 		cfg.DataId, cfg.GroupOrDefault(),
 		func(namespace, group, dataId, data string) {
 			// 只入队，读-改-写全部收敛到 dispatcher（#146）；队列满时阻塞
 			// 背压（见 listenEventQueueDepth），不丢事件。入队在桥的 per-key
 			// 派发锁内执行：背压只拖本 key 推送，不跨 key 耦合。
-			events <- configEvent{namespace: namespace, group: group, dataId: dataId, data: data}
+			//
+			// #251：stop 已关闭（收尾窗口内 SDK 仍可能推送，或 Unsubscribe
+			// 失败后订阅被桥回滚）时丢弃事件——否则送入无人消费的队列会
+			// 阻塞桥的派发锁。
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			select {
+			case events <- configEvent{namespace: namespace, group: group, dataId: dataId, data: data}:
+			case <-stop:
+			}
 		})
 	if err != nil {
-		close(stop) // 注册失败：dispatcher 在本轮处理后退出，不驻留泄漏
+		close(stop) // 注册失败：dispatcher 退出，不驻留泄漏
+		<-done
 		log.Error("listen config failed", logx.ErrKey, err)
 		return errors.Wrapf(err, "nacos: listen config [%s/%s]", cfg.GroupOrDefault(), cfg.DataId)
+	}
+
+	// ctx 不可取消（Background/TODO 的 Done() 为 nil）时不启动收尾 goroutine：
+	// 它只会永久阻塞在 nil channel 上，给 Deprecated 的 [Listen] 兼容路径
+	// 平白多泄漏一个 goroutine。可取消 ctx 才需要收尾（#251）。
+	if ctxDone := ctx.Done(); ctxDone != nil {
+		async.GoSafe(func() {
+			// defer 顺序：close(stop) 最后执行——即使 Unsubscribe 或 SDK
+			// Cancel panic，dispatcher、等待者与调用方都不会被卡住。
+			defer close(stop)
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("cancel listen config panicked (isolated)",
+						"dataId", cfg.DataId, logx.ErrKey, r, "stack", string(debug.Stack()))
+				}
+			}()
+			<-ctxDone
+			if err := bridge.Unsubscribe(cfg.DataId, cfg.GroupOrDefault(), id); err != nil {
+				log.Error("cancel listen config failed", "dataId", cfg.DataId, logx.ErrKey, err)
+			}
+		})
 	}
 	return nil
 }

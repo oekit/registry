@@ -102,6 +102,10 @@ func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 		s.listenErr.Store(&err)
 		return
 	}
+	// #251：成功注册必须清掉上一次的失败状态——Err() 的文档承诺是
+	// nil = 监听已挂上。此前只在失败时 Store，一次失败后即使调用方重试
+	// 成功（或 SDK 恢复后重连挂上），Err() 仍永久返回旧错误串。
+	s.listenErr.Store(nil)
 	// #126：ctx 取消即摘除本 watcher 的订阅（桥按句柄 Unsubscribe——只有
 	// 最后一个订阅者离开才触底层 Cancel，不再按 key 整删互杀）。此前
 	// Watch 无任何停止出口，被取消的 watcher 的监听永不释放（泄漏 + 推送空跑）。

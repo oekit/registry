@@ -10,7 +10,7 @@ go 1.26.0
 //
 // 拆分的理由（实测）：nacos-sdk-go/v2 单独引入即拖进 63 个第三方模块；
 // 不隔离时，**只想要注册发现接口**的消费方也会被连带拖进去。
-require github.com/oekit/core v0.17.2
+require github.com/oekit/core v0.18.0
 
 // registrymocks 直接消费 pkg/errors.Recovered（#158 panic 收编单源）⇒ pkg 转直接依赖。
 require github.com/oekit/pkg v0.56.0
@@ -20,6 +20,6 @@ require github.com/oekit/pkg v0.56.0
 // 两者均为矩阵内零重依赖包，根仓「零第三方依赖」承诺不破——go.sum 仅新增
 // 这两个模块自身，无任何 golang.org/... 等第三方代码进入根模块构建图。
 require (
-	github.com/oekit/concurrency v0.39.2
-	github.com/oekit/logx v0.12.0
+	github.com/oekit/concurrency v0.40.0
+	github.com/oekit/logx v0.12.1
 )

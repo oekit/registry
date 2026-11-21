@@ -42,6 +42,10 @@ type InstanceEvent struct {
 	Instances []registry.Instance
 }
 
+// DefaultDiscoverTimeout 是单次 Discover 的默认超时预算（#231）。
+// 轮询探活属探测类调用，按矩阵口径取 ≤10s。
+const DefaultDiscoverTimeout = 5 * time.Second
+
 // InstanceWatcher 实例轮询 watcher，定期轮询服务实例并在变更时触发回调。
 //
 // 基于 [registry.Discoverer] 接口，与具体注册中心解耦
@@ -49,12 +53,15 @@ type InstanceEvent struct {
 type InstanceWatcher struct {
 	discoverer registry.Discoverer
 	interval   time.Duration
-	services   []string
-	mu         sync.RWMutex
-	cache      map[string][]registry.Instance
-	callbacks  []func(InstanceEvent)
-	stopCh     chan struct{}
-	stopOnce   sync.Once
+	// discoverTimeout 是单次 Discover 的超时预算（#231）：>0 每次调用独立
+	// 派生 deadline；<0 表示不设单次预算、沿用 Start 传入的 ctx。
+	discoverTimeout time.Duration
+	services        []string
+	mu              sync.RWMutex
+	cache           map[string][]registry.Instance
+	callbacks       []func(InstanceEvent)
+	stopCh          chan struct{}
+	stopOnce        sync.Once
 	// inflight: serviceName → *atomic.Int32，仍在执行的回调 goroutine 数
 	// （回调异步派发，hertz#167）。若回调挂死，没有该计数则每轮 tick 都会
 	// 新增一个泄漏 goroutine，无上限。计数 >0 时跳过本轮派发（cache 不动，
@@ -76,6 +83,29 @@ func WithWatchInterval(d time.Duration) WatchOption {
 		panic("instancewatcher: WithWatchInterval requires positive interval")
 	}
 	return func(h *InstanceWatcher) { h.interval = d }
+}
+
+// WithDiscoverTimeout 设置**单次** Discover 的超时预算（#231）。
+//
+// 背景：checkService 此前直接用 Start 传入的 ctx 调 Discover——不响应 ctx
+// 的 Discoverer 一旦挂死，会永久卡住轮询主循环（该服务与后续服务的实例
+// 感知全部停摆，Stop 也无法收回主循环）。本选项为每次 Discover 独立派生
+// 预算，前一个服务的耗时不会挤占后一个的预算。
+//
+// 语义：
+//   - d > 0：每次 Discover 独立 context.WithTimeout(ctx, d)；
+//   - d == 0：使用 [DefaultDiscoverTimeout]（5s，探测类默认值 ≤10s）；
+//   - d < 0：显式禁用单次预算，Discover 直接使用 Start 传入的 ctx（与
+//     lifecycle.ReadyProbe.WithProbeTimeout 的负数语义对齐）。
+//
+// 预算是协作式的：Discover 实现必须尊重 ctx 才会在到点时返回；不响应 ctx
+// 的实现仍会阻塞主循环——**超时只能保证「感知不到就报错继续」对守规矩的
+// 实现成立**（Go 无法强杀 goroutine）。
+func WithDiscoverTimeout(d time.Duration) WatchOption {
+	if d == 0 {
+		d = DefaultDiscoverTimeout
+	}
+	return func(h *InstanceWatcher) { h.discoverTimeout = d }
 }
 
 // WithWatchServices 设置需要轮询的服务列表。
@@ -101,10 +131,11 @@ func WithWatchCallback(fn func(InstanceEvent)) WatchOption {
 func NewInstanceWatcher(discoverer registry.Discoverer, opts ...WatchOption) *InstanceWatcher {
 	sdbridge.EnsureNotNil(discoverer, "instancewatcher: NewInstanceWatcher", "discoverer")
 	h := &InstanceWatcher{
-		discoverer: discoverer,
-		interval:   10 * time.Second,
-		cache:      make(map[string][]registry.Instance),
-		stopCh:     make(chan struct{}),
+		discoverer:      discoverer,
+		interval:        10 * time.Second,
+		discoverTimeout: DefaultDiscoverTimeout,
+		cache:           make(map[string][]registry.Instance),
+		stopCh:          make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -165,7 +196,15 @@ func (h *InstanceWatcher) checkAll(ctx context.Context) {
 }
 
 func (h *InstanceWatcher) checkService(ctx context.Context, serviceName string) {
-	current, err := h.discoverer.Discover(ctx, serviceName)
+	// 单次 Discover 独立预算（#231）：从调用方 ctx 派生，前序服务耗时不吃
+	// 后续预算；负数 = 显式禁用（直接用调用方 ctx）。
+	discoverCtx := ctx
+	if h.discoverTimeout > 0 {
+		var cancel context.CancelFunc
+		discoverCtx, cancel = context.WithTimeout(ctx, h.discoverTimeout)
+		defer cancel()
+	}
+	current, err := h.discoverer.Discover(discoverCtx, serviceName)
 	if err != nil {
 		log.Error("health check failed", "service", serviceName, logx.ErrKey, err)
 		return

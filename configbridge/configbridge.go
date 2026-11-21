@@ -53,15 +53,20 @@ type Handle uint64
 type Bridge struct {
 	hooks Hooks
 
-	// regMu 串行化注册路径（Subscribe 的 Listen 调用 / Unsubscribe 的
-	// Cancel 调用）：底层 SDK 调用可能含网络首拉，期间不得有并发 Subscribe
-	// 追加表项——否则 Listen 失败的回滚无法呈现干净失败（并发者已拿到
-	// 「成功」句柄而底层没注册）。派发路径只拿 mu（快锁），不受 regMu 阻塞。
-	regMu sync.Mutex
-
-	mu      sync.Mutex       // 保护 subs/bridged/dispatches/nextID（快路径）
+	// mu 保护表状态（快路径，绝不跨网络调用持有，#250）。
+	mu      sync.Mutex
 	subs    map[string][]sub // key → 订阅栈（LIFO 摘除）
 	bridged map[string]bool  // key → 底层是否已注册
+	// pending 是 key → 在途底层调用完成信号（#250）：
+	//   - 首订阅者先在本表占位（bridged 仍为 false、自己的 sub 先入栈），
+	//     释放 mu 后在锁外调 hooks.Listen；同 key 的其他 Subscribe 等到
+	//     close 后重试（成功则直接追加、失败则接管重试），不再像 regMu
+	//     时代那样全桥串行——一个 key 的首拉挂住只阻塞同 key 的注册，
+	//     其他 key 的 Subscribe/Unsubscribe 照常进行；
+	//   - 最后一个订阅者离开时先清本地表项并占位，锁外调 hooks.Cancel。
+	// 判据：pending 存在 ⇔ 该 key 有在途 Listen/Cancel；表状态在调用前
+	// 已落定，调用方只在 close 后重读状态，不会看到半开视图。
+	pending map[string]chan struct{}
 	// dispatches 按 key 的派发锁（#127：同 key 回调不并发、不乱序）。
 	// per-key 而非整桥：某 key 的订阅者慢/背压（如 config_loader 的队列
 	// 入队）只拖住本 key 的推送，不跨 key 耦合——与原 per-Listen 交付锁
@@ -104,6 +109,7 @@ func newBridge(hooks Hooks) *Bridge {
 		hooks:      hooks,
 		subs:       make(map[string][]sub),
 		bridged:    make(map[string]bool),
+		pending:    make(map[string]chan struct{}),
 		dispatches: make(map[string]*sync.Mutex),
 	}
 }
@@ -128,35 +134,56 @@ func (b *Bridge) Subscribe(dataID, group string, cb func(namespace, group, dataI
 	}
 	k := keyOf(dataID, group)
 
-	b.regMu.Lock()
-	defer b.regMu.Unlock()
-
-	b.mu.Lock()
-	b.nextID++
-	id := b.nextID
-	first := !b.bridged[k]
-	if first {
-		b.bridged[k] = true // 先占位（regMu 已串行化，无并发 Subscribe 竞争）
-	}
-	b.subs[k] = append(b.subs[k], sub{id: id, cb: cb})
-	b.mu.Unlock()
-
-	if !first {
-		return id, nil
-	}
-	if err := b.hooks.Listen(dataID, group, b.makeRelay(dataID, group, k)); err != nil {
-		// 注册失败：回滚本订阅与占位（含 bridged 复位，否则后续 Subscribe
-		// 会误判「已注册」跳过 Listen，呈现假成功），桥对调用方呈现干净的失败。
+	for {
 		b.mu.Lock()
-		b.removeLocked(k, id)
-		if len(b.subs[k]) == 0 {
-			delete(b.subs, k)
-			b.bridged[k] = false
+		if b.bridged[k] {
+			// 已注册：只追加本地表项（快路径，锁外无调用）
+			b.nextID++
+			id := b.nextID
+			b.subs[k] = append(b.subs[k], sub{id: id, cb: cb})
+			b.mu.Unlock()
+			return id, nil
+		}
+		if ch, ok := b.pending[k]; ok {
+			// 同 key 有在途 Listen/Cancel（#250）：等它完成后按最新状态重试。
+			// 释放 mu 等待——其他 key 的注册不受影响（regMu 时代全桥串行）。
+			b.mu.Unlock()
+			<-ch
+			continue
+		}
+
+		// 首订阅者：占位 + 自己的 sub 先入栈（table 状态先行），锁外做
+		// 可能含网络首拉的 hooks.Listen。等待者看到 pending 即等待，不会
+		// 在 Listen 结果未定时追加表项。
+		ch := make(chan struct{})
+		b.pending[k] = ch
+		b.nextID++
+		id := b.nextID
+		b.subs[k] = append(b.subs[k], sub{id: id, cb: cb})
+		b.mu.Unlock()
+
+		err := b.hooks.Listen(dataID, group, b.makeRelay(dataID, group, k))
+
+		b.mu.Lock()
+		delete(b.pending, k)
+		if err != nil {
+			// 注册失败：回滚本订阅（等待者从未入栈）。bridged 保持 false，
+			// 后续 Subscribe 会重新接管 Listen，桥对调用方呈现干净的失败。
+			b.removeLocked(k, id)
+			if len(b.subs[k]) == 0 {
+				delete(b.subs, k)
+			}
+		} else {
+			b.bridged[k] = true
 		}
 		b.mu.Unlock()
-		return 0, errors.Wrapf(err, "configbridge: listen %s/%s", group, dataID)
+		close(ch) // 唤醒等待者（成功 → 直接追加；失败 → 接管重试）
+
+		if err != nil {
+			return 0, errors.Wrapf(err, "configbridge: listen %s/%s", group, dataID)
+		}
+		return id, nil
 	}
-	return id, nil
 }
 
 // Unsubscribe 按句柄摘除订阅；该 key 最后一个订阅者离开时调 hooks.Cancel。
@@ -165,40 +192,68 @@ func (b *Bridge) Subscribe(dataID, group string, cb func(namespace, group, dataI
 func (b *Bridge) Unsubscribe(dataID, group string, id Handle) error {
 	k := keyOf(dataID, group)
 
-	b.regMu.Lock()
-	defer b.regMu.Unlock()
+	for {
+		b.mu.Lock()
+		if !b.hasSubLocked(k, id) {
+			b.mu.Unlock()
+			return nil // 幂等：句柄不在（已摘/不存在），不等待无关的在途调用
+		}
+		if ch, ok := b.pending[k]; ok {
+			// 同 key 有在途 Listen/Cancel：等它完成后按最新状态重试
+			// （在途 Listen 期间本句柄尚不可能存在，此分支主要覆盖
+			// Cancel 在途时的并发双摘——重试后幂等返回）。
+			b.mu.Unlock()
+			<-ch
+			continue
+		}
+		b.removeLocked(k, id)
+		if len(b.subs[k]) > 0 {
+			b.mu.Unlock()
+			return nil
+		}
 
-	b.mu.Lock()
-	if !b.removeLocked(k, id) {
-		b.mu.Unlock()
-		return nil // 幂等：句柄不在（已摘/不存在）
-	}
-	last := len(b.subs[k]) == 0
-	if last {
+		// 最后一个订阅者：本地表项先落定（key 清空、bridged 复位），占位后
+		// 锁外调可能含网络调用的 hooks.Cancel（#250）。等待者不会在 Cancel
+		// 在途时抢先重新注册（pending 挡在 Listen 之前）。
+		ch := make(chan struct{})
+		b.pending[k] = ch
 		delete(b.subs, k)
 		b.bridged[k] = false
-	}
-	b.mu.Unlock()
+		b.mu.Unlock()
 
-	if !last {
+		err := b.hooks.Cancel(dataID, group)
+
+		b.mu.Lock()
+		delete(b.pending, k)
+		b.mu.Unlock()
+		close(ch)
+
+		if err != nil {
+			return errors.Wrapf(err, "configbridge: cancel %s/%s", group, dataID)
+		}
 		return nil
 	}
-	if err := b.hooks.Cancel(dataID, group); err != nil {
-		return errors.Wrapf(err, "configbridge: cancel %s/%s", group, dataID)
-	}
-	return nil
 }
 
-// removeLocked 摘除指定句柄；返回是否摘到（调用方须持 b.mu）。
-func (b *Bridge) removeLocked(k string, id Handle) bool {
-	list := b.subs[k]
-	for i, s := range list {
+// hasSubLocked 判断 key 的订阅栈里是否有指定句柄（调用方须持 b.mu）。
+func (b *Bridge) hasSubLocked(k string, id Handle) bool {
+	for _, s := range b.subs[k] {
 		if s.id == id {
-			b.subs[k] = append(list[:i], list[i+1:]...)
 			return true
 		}
 	}
 	return false
+}
+
+// removeLocked 摘除指定句柄（调用方须持 b.mu 且已用 hasSubLocked 确认存在）。
+func (b *Bridge) removeLocked(k string, id Handle) {
+	list := b.subs[k]
+	for i, s := range list {
+		if s.id == id {
+			b.subs[k] = append(list[:i], list[i+1:]...)
+			return
+		}
+	}
 }
 
 // makeRelay 构造注册给底层的桥接回调：读订阅快照后串行逐个投递，

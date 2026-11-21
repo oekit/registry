@@ -191,6 +191,184 @@ func TestSerialDispatch(t *testing.T) {
 	}
 }
 
+// TestSlowListenDoesNotBlockOtherKeys 回归（registry#250）：hooks.Listen
+// 可能含网络首拉（SDK ListenConfig），此前 Subscribe 全程持 regMu——一个
+// key 的首拉挂住会串行阻塞该 client 下**所有 key** 的 Subscribe/
+// Unsubscribe。修复后只在 b.mu 内占位、网络调用锁外执行，其他 key 不受
+// 影响（同 key 仍由 pending 串行化）。
+//
+// 变异性负对照：恢复「regMu 覆盖 Listen」后 fast 订阅在 2s 内无法返回。
+func TestSlowListenDoesNotBlockOtherKeys(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	b := New(Hooks{
+		Listen: func(dataID, _ string, _ ChangeFunc) error {
+			if dataID == "slow" {
+				once.Do(func() { close(entered) })
+				<-release // 模拟网络首拉挂住
+			}
+			return nil
+		},
+		Cancel: func(_, _ string) error { return nil },
+	})
+
+	slowDone := make(chan error, 1)
+	go func() {
+		_, err := b.Subscribe("slow", "g", func(_, _, _, _ string) {})
+		slowDone <- err
+	}()
+	<-entered // slow 的 Listen 已在途
+
+	fastDone := make(chan error, 1)
+	go func() {
+		_, err := b.Subscribe("fast", "g", func(_, _, _, _ string) {})
+		fastDone <- err
+	}()
+	select {
+	case err := <-fastDone:
+		if err != nil {
+			t.Fatalf("fast Subscribe: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("#250：另一 key 的 Subscribe 被在途 Listen 阻塞（regMu 覆盖网络调用）")
+	}
+
+	close(release)
+	if err := <-slowDone; err != nil {
+		t.Fatalf("slow Subscribe: %v", err)
+	}
+}
+
+// TestSlowCancelDoesNotBlockOtherKeys 同 #250 的 Cancel 面：最后一个订阅者
+// 离开时的 hooks.Cancel（SDK CancelListenConfig）同样可能阻塞，不得拖住
+// 其他 key 的注册；同 key 的重新订阅则必须等 Cancel 完成后再注册，
+// 避免「Cancel 在途时抢先 Listen」被随后的 Cancel 一并取消。
+func TestSlowCancelDoesNotBlockOtherKeys(t *testing.T) {
+	cancelEntered := make(chan struct{})
+	cancelRelease := make(chan struct{})
+	var once sync.Once
+	slowListenN := atomic.Int32{}
+	b := New(Hooks{
+		Listen: func(dataID, _ string, _ ChangeFunc) error {
+			if dataID == "slow" {
+				slowListenN.Add(1)
+			}
+			return nil
+		},
+		Cancel: func(dataID, _ string) error {
+			if dataID == "slow" {
+				once.Do(func() { close(cancelEntered) })
+				<-cancelRelease
+			}
+			return nil
+		},
+	})
+
+	h, err := b.Subscribe("slow", "g", func(_, _, _, _ string) {})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	cancelDone := make(chan error, 1)
+	go func() { cancelDone <- b.Unsubscribe("slow", "g", h) }()
+	<-cancelEntered // slow 的 Cancel 已在途
+
+	// 其他 key 不得被 Cancel 阻塞
+	fastDone := make(chan error, 1)
+	go func() {
+		_, err := b.Subscribe("fast", "g", func(_, _, _, _ string) {})
+		fastDone <- err
+	}()
+	select {
+	case err := <-fastDone:
+		if err != nil {
+			t.Fatalf("fast Subscribe: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("#250：另一 key 的 Subscribe 被在途 Cancel 阻塞")
+	}
+
+	// 同 key 重新订阅必须等 Cancel 完成（pending 串行化）
+	sameKeyDone := make(chan error, 1)
+	go func() {
+		_, err := b.Subscribe("slow", "g", func(_, _, _, _ string) {})
+		sameKeyDone <- err
+	}()
+	select {
+	case err := <-sameKeyDone:
+		t.Fatalf("同 key 订阅在 Cancel 在途时提前返回（err=%v）：可能与 Cancel 交错", err)
+	case <-time.After(100 * time.Millisecond):
+		// 预期：等待 Cancel
+	}
+
+	close(cancelRelease)
+	if err := <-cancelDone; err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+	if err := <-sameKeyDone; err != nil {
+		t.Fatalf("同 key 重订阅: %v", err)
+	}
+	if got := slowListenN.Load(); got != 2 {
+		t.Fatalf("同 key 重订阅应重新 Listen 一次（slow 总 2 次）, got %d", got)
+	}
+}
+
+// TestConcurrentSubscribeSameKeySingleListen 并发首订阅同 key：只有一次
+// Listen，全部订阅者拿到句柄并收到后续推送（#250 的占位/等待逻辑）。
+func TestConcurrentSubscribeSameKeySingleListen(t *testing.T) {
+	listenEntered := make(chan struct{})
+	listenRelease := make(chan struct{})
+	relayCh := make(chan ChangeFunc, 1)
+	var listenN atomic.Int32
+	b := New(Hooks{
+		Listen: func(_ string, _ string, onChange ChangeFunc) error {
+			if listenN.Add(1) == 1 {
+				close(listenEntered)
+				<-listenRelease // 拉长注册窗口，逼出并发等待路径
+			}
+			relayCh <- onChange
+			return nil
+		},
+		Cancel: func(_, _ string) error { return nil },
+	})
+
+	const n = 4
+	var received atomic.Int32
+	var wg sync.WaitGroup
+	handles := make([]Handle, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			handles[i], errs[i] = b.Subscribe("d", "g", func(_, _, _, _ string) {
+				received.Add(1)
+			})
+		}(i)
+	}
+	<-listenEntered
+	close(listenRelease)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Subscribe[%d]: %v", i, err)
+		}
+	}
+	if got := listenN.Load(); got != 1 {
+		t.Fatalf("并发首订阅应只 Listen 一次, got %d", got)
+	}
+	(<-relayCh)("ns", "g", "d", "v")
+	if got := received.Load(); got != n {
+		t.Fatalf("全部 %d 个订阅者都应收到推送, got %d", n, got)
+	}
+	for _, h := range handles {
+		if err := b.Unsubscribe("d", "g", h); err != nil {
+			t.Fatalf("Unsubscribe: %v", err)
+		}
+	}
+}
+
 // TestForSharedByClient 同 client 身份共享同一桥（跨封装闭合点）。
 func TestForSharedByClient(t *testing.T) {
 	type fakeClient struct{ name string }

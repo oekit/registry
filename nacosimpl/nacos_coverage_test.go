@@ -1336,9 +1336,9 @@ func TestConfigStore_StopListenConfig_PreCanceledCtx(t *testing.T) {
 	}
 }
 
-// TestConfigStore_ListenConfig_PreCanceledCtx：ListenConfig 注册本身做进入前
-// 预检（#143）——ctx 已取消时不发起 SDK 注册，onChange 不受 ctx 管理（取消
-// 靠 StopListenConfig，godoc 钉明）。
+// TestConfigStore_ListenConfig_PreCanceledCtx：ListenConfig 整段登记走
+// invokeWithCtx 漏斗（#143/#250）——ctx 已取消时不发起 SDK 注册；
+// onChange 不受 ctx 管理（取消靠 StopListenConfig，godoc 钉明）。
 func TestConfigStore_ListenConfig_PreCanceledCtx(t *testing.T) {
 	called := make(chan vo.ConfigParam, 1)
 	stub := &stubConfigClient{
@@ -1701,4 +1701,150 @@ func TestConfigStore_MulticastSameKeySameStore(t *testing.T) {
 	if len(gotA) != 2 || gotA[1] != "v2" {
 		t.Fatalf("★ 幸存订阅者 A 应继续收到推送（互杀回归）: A=%v", gotA)
 	}
+}
+
+// --- registry#250：Subscribe/Unsubscribe/ListenConfig 走 invokeWithCtx 漏斗 ---
+
+// TestSubscriber_Subscribe_PreCanceledCtx 预取消 ctx 必须快速失败且不触
+// SDK（此前 Subscribe 直接调 SDK，ctx 被完全忽略）。
+func TestSubscriber_Subscribe_PreCanceledCtx(t *testing.T) {
+	called := make(chan struct{}, 1)
+	stub := &stubNamingClient{
+		subscribeFunc: func(_ *vo.SubscribeParam) error {
+			called <- struct{}{}
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.Subscribe(ctx, "svc-250", func(_ []registry.Instance) {})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Subscribe with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case <-called:
+		t.Fatal("SDK Subscribe must not be called when ctx already canceled")
+	default:
+	}
+}
+
+// TestSubscriber_Subscribe_CancelDuringSDKCall #250 核心场景：Nacos 不可达/
+// gRPC 建流卡住时，调用方的超时预算必须生效——ctx 取消后 Subscribe 立即
+// 返回 context.Canceled，而不是随 SDK 无限挂起。
+func TestSubscriber_Subscribe_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubNamingClient{
+		subscribeFunc: func(_ *vo.SubscribeParam) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Subscribe(ctx, "svc-250", func(_ []registry.Instance) {}) }()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Subscribe after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe blocked on SDK call after ctx cancel — shutdown budget not enforced")
+	}
+	close(release)
+}
+
+// TestSubscriber_Unsubscribe_PreCanceledCtx 预取消 ctx 快速失败且不触 SDK。
+func TestSubscriber_Unsubscribe_PreCanceledCtx(t *testing.T) {
+	called := make(chan struct{}, 1)
+	stub := &stubNamingClient{
+		unsubscribeFunc: func(_ *vo.SubscribeParam) error {
+			called <- struct{}{}
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.Unsubscribe(ctx, "svc-250")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Unsubscribe with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case <-called:
+		t.Fatal("SDK Unsubscribe must not be called when ctx already canceled")
+	default:
+	}
+}
+
+// TestSubscriber_Unsubscribe_CancelDuringSDKCall #250 关停热路径：nns/client
+// 以 closeCtx（5s 预算）调 Unsubscribe，Nacos 不可达时必须在预算内返回。
+func TestSubscriber_Unsubscribe_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubNamingClient{
+		unsubscribeFunc: func(_ *vo.SubscribeParam) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Unsubscribe(ctx, "svc-250") }()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Unsubscribe after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Unsubscribe blocked on SDK call after ctx cancel — shutdown budget not enforced")
+	}
+	close(release)
+}
+
+// TestConfigStore_ListenConfig_CancelDuringSDKCall #250：首订阅同步触发
+// hooks.Listen（含网络首拉），ctx 取消必须让 ListenConfig 在预算内返回；
+// godoc 此前称「注册本身是本地登记」，与实现不符。
+func TestConfigStore_ListenConfig_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubConfigClient{
+		listenConfigFunc: func(_ vo.ConfigParam) error {
+			close(entered)
+			<-release // 模拟网络首拉挂住
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cs.ListenConfig(ctx, "k250", "G", func(string) {}) }()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ListenConfig after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ListenConfig blocked on SDK ListenConfig — ctx budget not enforced (#250)")
+	}
+	close(release)
 }

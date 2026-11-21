@@ -28,6 +28,9 @@ func TestNewInstanceWatcher_Defaults(t *testing.T) {
 	if h.interval != 10*time.Second {
 		t.Errorf("interval = %v, want 10s", h.interval)
 	}
+	if h.discoverTimeout != DefaultDiscoverTimeout {
+		t.Errorf("discoverTimeout = %v, want default %v (#231)", h.discoverTimeout, DefaultDiscoverTimeout)
+	}
 	if len(h.services) != 0 {
 		t.Errorf("len(services) = %d, want 0", len(h.services))
 	}

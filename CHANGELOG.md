@@ -1,3 +1,12 @@
+## [v0.8.3] — 2026-11-21
+
+- - fix: nacosimpl Subscribe/Unsubscribe 改走 invokeWithCtxErr、ListenConfig 整段走 invokeWithCtx（#250）
+- fix: configbridge regMu 去除（per-key pending 占位，慢首拉不阻塞全 client）（#250）
+- fix: instancewatcher WithDiscoverTimeout 每次 Discover 独立预算——不响应 ctx 的 Discoverer 不再卡死轮询主循环（#231）
+- fix: config_source Err() 成功后恢复、config_loader 新增 ListenCtx、nacosimpl Deregister 复用 validateInstance、configbridge Cancel 失败回滚 + Remove 入口（#251）
+
+关联问题单：registry#250、registry#251、registry#231。
+
 ## [v0.8.2] — 2026-11-20
 
 - fix(nacosimpl): invokeWithCtx 公共漏斗入口补 nil-ctx 兜底——#231 同文件只修 panic 半边，Discoverer/ConfigStore/Registrar 全部 SPI 入口经此漏斗；ConfigStore.ListenConfig/StopListenConfig 独立预检与 nacos ConfigSource.Watch 一并兜底（#240）

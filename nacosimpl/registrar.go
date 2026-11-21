@@ -19,12 +19,17 @@ var errDeregisterReturnedFalse = errors.New("nacos deregister returned false")
 // ErrNilClient 表示构造时传入了 nil 的 SDK client。
 var ErrNilClient = errors.New("registry/nacos: client must be non-nil")
 
-// ErrInvalidPort 表示 Register 传入的实例端口不在合法范围 [1, 65535] 内。
+// ErrInvalidPort 表示 Register/Deregister 传入的实例端口不在合法范围
+// [1, 65535] 内。
 //
 // #215：Instance.Port 是 int，负端口经两道前置门（sdbridge 的 ParseAddr、
 // nns 的 buildInstance）本可被拦，但直用 Registrar 的调用方绕过它们后，
 // uint64(inst.Port) 会静默溢出成 18446744073709551615 注册进 Nacos——
 // 本地防护必须存在，不能依赖上游调用链。
+//
+// #251：Deregister 此前只做 uint64 转换、没有同款校验——负端口溢出后的
+// 反注册请求对不上真实实例，失败后残留幽灵实例；两个入口现共用
+// validateInstance。
 var ErrInvalidPort = errors.New("registry/nacos: port out of range [1, 65535]")
 
 // Registrar 实现 [registry.Registrar] 接口，基于 Nacos naming client。
@@ -86,6 +91,17 @@ func (r *Registrar) resolveGroupCluster(inst registry.Instance) (string, string)
 	return groupName, clusterName
 }
 
+// validateInstance 是 Register/Deregister 共用的本地前置校验（#215/#251）：
+// uint64(inst.Port) 对负端口会静默溢出成 18446744073709551615，两个方向的
+// SDK 调用都必须在此拦下——Register 会注册进错误端口，Deregister 会注销
+// 不到真实实例并残留幽灵实例。op 只用于错误文案（register/deregister）。
+func validateInstance(op string, inst registry.Instance) error {
+	if inst.Port <= 0 || inst.Port > 65535 {
+		return wrapErr(op, inst.Service, ErrInvalidPort)
+	}
+	return nil
+}
+
 // Register 将服务实例注册到 Nacos。
 //
 // 从 inst 读取 Service、IP、Port、Weight、Metadata。
@@ -98,8 +114,8 @@ func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error 
 	// #215：端口本地防护——uint64(inst.Port) 对负端口会静默溢出成
 	// 18446744073709551615（ParseAddr/buildInstance 两道前置门可被直调
 	// 绕过），入口处校验而非依赖上游调用链。
-	if inst.Port <= 0 || inst.Port > 65535 {
-		return wrapErr("register", inst.Service, ErrInvalidPort)
+	if err := validateInstance("register", inst); err != nil {
+		return err
 	}
 
 	// #230：权重兜底收编单源——此前这里是第三份手写钳制
@@ -138,11 +154,21 @@ func (r *Registrar) Register(ctx context.Context, inst registry.Instance) error 
 //
 // inst.Group / inst.Cluster 非空时覆盖 Registrar 默认值。
 //
+// 端口校验与 Register 同源（#251，validateInstance）：负端口/零/超界在入口
+// 即返回 ErrInvalidPort，不把 uint64 溢出值发给 Nacos。
+//
 // ctx 语义（#65）：与 [Registrar.Register] 相同——关停期给本调用挂
 // context.WithTimeout 的超时预算会生效（ctx 到点立即返回 ctx.Err()），
 // 但底层 SDK 反注册无法被中断，会在后台自行完成。Nacos 临时实例
 // （Ephemeral=true）心跳停止后也会被服务端摘除，反注册是加速手段。
 func (r *Registrar) Deregister(ctx context.Context, inst registry.Instance) error {
+	// #251：与 Register 同款本地端口防护——此前 Deregister 直接
+	// uint64(inst.Port)，负端口溢出成 18446744073709551615 发往 Nacos，
+	// 反注册必然失败并残留幽灵实例。
+	if err := validateInstance("deregister", inst); err != nil {
+		return err
+	}
+
 	groupName, clusterName := r.resolveGroupCluster(inst)
 
 	ok, err := invokeWithCtx(ctx, func() (bool, error) {

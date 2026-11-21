@@ -14,6 +14,7 @@ type fakeBackend struct {
 	listenN   int
 	cancelN   int
 	listenErr error
+	cancelErr error
 	lastRelay ChangeFunc
 }
 
@@ -33,7 +34,7 @@ func (f *fakeBackend) hooks() Hooks {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.cancelN++
-			return nil
+			return f.cancelErr
 		},
 	}
 }
@@ -392,5 +393,124 @@ func TestForSharedByClient(t *testing.T) {
 	fk.push("v")
 	if len(got) != 1 {
 		t.Fatalf("b1 订阅者应收到推送, got %v", got)
+	}
+}
+
+// TestUnsubscribeCancelFailureRollsBack 是 #251 的回归钉：Unsubscribe 先摘
+// 句柄再锁外 Cancel，Cancel 失败时不回滚——句柄从表里永久消失而底层监听
+// 仍活着，订阅成为谁也无法再摘的无主泄漏。修复后失败必须恢复表项：
+// 推送仍投递、bridged 保持 true（新订阅不重复 Listen）、同句柄可重试成功。
+func TestUnsubscribeCancelFailureRollsBack(t *testing.T) {
+	fk := &fakeBackend{}
+	b := New(fk.hooks())
+
+	var got []string
+	h, err := b.Subscribe("d", "g", func(_, _, _, s string) { got = append(got, s) })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if listen, _ := fk.counts(); listen != 1 {
+		t.Fatalf("首次订阅应 Listen 一次, got %d", listen)
+	}
+
+	// Cancel 失败：必须返回错误，且本地表项回滚（订阅仍有效）。
+	fk.mu.Lock()
+	fk.cancelErr = errors.New("cancel boom")
+	fk.mu.Unlock()
+	if uerr := b.Unsubscribe("d", "g", h); uerr == nil {
+		t.Fatal("Cancel 失败必须上抛错误")
+	}
+	fk.push("v1")
+	if len(got) != 1 || got[0] != "v1" {
+		t.Fatalf("#251: Cancel 失败后订阅应回滚并继续投递, got=%v", got)
+	}
+
+	// bridged 已恢复：同 key 新订阅只追加本地表项，不得重复 Listen。
+	h2, err := b.Subscribe("d", "g", func(_, _, _, _ string) {})
+	if err != nil {
+		t.Fatalf("回滚后 Subscribe: %v", err)
+	}
+	if listen, _ := fk.counts(); listen != 1 {
+		t.Fatalf("#251: 回滚后 bridged 应保持 true（不得重复 Listen）, got %d", listen)
+	}
+
+	// 同句柄重试（Cancel 恢复）：h 不是最后一个（h2 在），不触 Cancel。
+	fk.mu.Lock()
+	fk.cancelErr = nil
+	fk.mu.Unlock()
+	if uerr := b.Unsubscribe("d", "g", h); uerr != nil {
+		t.Fatalf("重试 Unsubscribe(h): %v", uerr)
+	}
+	if _, cancel := fk.counts(); cancel != 1 {
+		t.Fatalf("尚有订阅者时不应再次 Cancel, got %d", cancel)
+	}
+
+	// 最后一个订阅者离开：Cancel 成功，表项清空、不再投递。
+	if uerr := b.Unsubscribe("d", "g", h2); uerr != nil {
+		t.Fatalf("Unsubscribe(h2): %v", uerr)
+	}
+	if _, cancel := fk.counts(); cancel != 2 {
+		t.Fatalf("最后订阅者离开应 Cancel（累计 2 次：失败尝试 + 成功）, got %d", cancel)
+	}
+	fk.push("v2")
+	if len(got) != 1 {
+		t.Fatalf("取消成功后不应再投递, got=%v", got)
+	}
+}
+
+// TestUnsubscribeCancelFailureDirectRetry 覆盖「唯一订阅者」路径：Cancel
+// 失败回滚后，同句柄重试必须能重新走 Cancel 并成功收尾（#251）。
+func TestUnsubscribeCancelFailureDirectRetry(t *testing.T) {
+	fk := &fakeBackend{}
+	b := New(fk.hooks())
+	h, err := b.Subscribe("d", "g", func(_, _, _, _ string) {})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	fk.mu.Lock()
+	fk.cancelErr = errors.New("cancel boom")
+	fk.mu.Unlock()
+	if uerr := b.Unsubscribe("d", "g", h); uerr == nil {
+		t.Fatal("Cancel 失败必须上抛错误")
+	}
+
+	fk.mu.Lock()
+	fk.cancelErr = nil
+	fk.mu.Unlock()
+	if uerr := b.Unsubscribe("d", "g", h); uerr != nil {
+		t.Fatalf("Cancel 恢复后重试应成功: %v", uerr)
+	}
+	if _, cancel := fk.counts(); cancel != 2 {
+		t.Fatalf("重试应再次调用 Cancel（累计 2 次）, got %d", cancel)
+	}
+	// 收尾后句柄幂等且不再触发 Cancel。
+	if uerr := b.Unsubscribe("d", "g", h); uerr != nil {
+		t.Fatalf("重复摘应幂等 nil, got %v", uerr)
+	}
+	if _, cancel := fk.counts(); cancel != 2 {
+		t.Fatalf("已收尾句柄不应再 Cancel, got %d", cancel)
+	}
+}
+
+// TestRemoveDropsBridge 覆盖 #251 新增的生产清理入口：Remove 后同一 client
+// 的 For 重建新桥（全局表不再永久持有 client 与订阅表）。
+func TestRemoveDropsBridge(t *testing.T) {
+	type fakeClient struct{ id int }
+	c := &fakeClient{id: 1}
+	defer Remove(c)
+
+	fk := &fakeBackend{}
+	b1 := For(c, fk.hooks())
+	Remove(c)
+	b2 := For(c, fk.hooks())
+	if b1 == b2 {
+		t.Fatal("#251: Remove 后 For 应重建桥")
+	}
+	if _, err := b2.Subscribe("d", "g", func(_, _, _, _ string) {}); err != nil {
+		t.Fatalf("新桥 Subscribe: %v", err)
+	}
+	if listen, _ := fk.counts(); listen != 1 {
+		t.Fatalf("新桥应独立注册底层监听, got %d", listen)
 	}
 }

@@ -328,6 +328,39 @@ func TestRegistrar_Deregister_SDKError(t *testing.T) {
 	}
 }
 
+// TestRegistrar_Deregister_InvalidPort 是 #251 的回归钉：Deregister 此前
+// 直接 uint64(inst.Port)（负端口静默溢出成 18446744073709551615），把
+// 对不上真实实例的反注册请求发给 Nacos——失败后残留幽灵实例。现在与
+// Register 共用 validateInstance：非法端口入口即返回 ErrInvalidPort，
+// SDK 调用不得发起。
+func TestRegistrar_Deregister_InvalidPort(t *testing.T) {
+	called := false
+	stub := &stubNamingClient{
+		deregInstanceFunc: func(_ vo.DeregisterInstanceParam) (bool, error) {
+			called = true
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+
+	for _, port := range []int{-1, 0, 65536} {
+		err := r.Deregister(context.Background(), registry.Instance{Service: "s", IP: "1.1.1.1", Port: port})
+		if err == nil {
+			t.Fatalf("expected error for port %d, got nil", port)
+		}
+		if !errors.Is(err, ErrInvalidPort) {
+			t.Errorf("expected errors.Is(err, ErrInvalidPort) for port %d, got: %v", port, err)
+		}
+		if !contains(err.Error(), "deregister") {
+			t.Errorf("expected error to mention 'deregister' for port %d, got: %v", port, err)
+		}
+		if called {
+			t.Errorf("SDK DeregisterInstance must not be called for invalid port %d", port)
+			called = false
+		}
+	}
+}
+
 // --- Discoverer tests ---
 
 // TestDiscoverer_NewWithOptions verifies WithDiscovererGroup/Cluster.

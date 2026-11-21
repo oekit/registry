@@ -92,6 +92,9 @@ var bridges sync.Map // client 身份键 → *Bridge
 //
 // 同一 client 先后以不同 hooks 调用时，**首个 hooks 生效**（后到者忽略）：
 // hooks 是构造参数而非订阅参数，同 client 的底层后端必然一致。
+//
+// 桥表是进程级 sync.Map：client 生命周期结束时（如动态租户/连接池重建）
+// 调用 [Remove] 清理，避免键与订阅表永久驻留（registry#251）。
 func For(client any, hooks Hooks) *Bridge {
 	if v, ok := bridges.Load(client); ok {
 		return v.(*Bridge)
@@ -189,6 +192,12 @@ func (b *Bridge) Subscribe(dataID, group string, cb func(namespace, group, dataI
 // Unsubscribe 按句柄摘除订阅；该 key 最后一个订阅者离开时调 hooks.Cancel。
 //
 // 句柄已摘除（重复调用/并发双摘）时幂等返回 nil——停止路径不该因竞态报错。
+//
+// Cancel 失败时**回滚本地表项**（registry#251）：恢复被摘订阅、bridged 保持
+// true 并返回错误——订阅句柄仍有效，调用方可用同句柄重试。此前先摘句柄再
+// 锁外 Cancel、失败不回滚：句柄从表里永久消失而底层监听仍活着，订阅变成
+// 无主泄漏（谁也无法再摘）。失败按「监听未取消」处理（SDK CancelListenConfig
+// 无半取消语义）；成功才把 bridged 复位，后续首订阅者会重新 Listen。
 func (b *Bridge) Unsubscribe(dataID, group string, id Handle) error {
 	k := keyOf(dataID, group)
 
@@ -206,7 +215,13 @@ func (b *Bridge) Unsubscribe(dataID, group string, id Handle) error {
 			<-ch
 			continue
 		}
-		b.removeLocked(k, id)
+		removed, ok := b.removeLocked(k, id)
+		if !ok {
+			// hasSubLocked 与 removeLocked 均在 b.mu 内、状态未变，
+			// 理论不可达；保持防御性返回，不误删他人订阅。
+			b.mu.Unlock()
+			return nil
+		}
 		if len(b.subs[k]) > 0 {
 			b.mu.Unlock()
 			return nil
@@ -225,6 +240,13 @@ func (b *Bridge) Unsubscribe(dataID, group string, id Handle) error {
 
 		b.mu.Lock()
 		delete(b.pending, k)
+		if err != nil {
+			// #251：Cancel 失败 → 监听仍在，回滚订阅表项与 bridged。
+			// removeLocked 摘的是栈尾（本句柄），此处按原位置放回语义等价：
+			// 该 key 已无其他订阅者，LIFO 顺序不承载额外契约。
+			b.subs[k] = append(b.subs[k], removed)
+			b.bridged[k] = true
+		}
 		b.mu.Unlock()
 		close(ch)
 
@@ -245,15 +267,17 @@ func (b *Bridge) hasSubLocked(k string, id Handle) bool {
 	return false
 }
 
-// removeLocked 摘除指定句柄（调用方须持 b.mu 且已用 hasSubLocked 确认存在）。
-func (b *Bridge) removeLocked(k string, id Handle) {
+// removeLocked 摘除指定句柄并返回被摘除的订阅（调用方须持 b.mu 且已用
+// hasSubLocked 确认存在）。返回值供 Cancel 失败回滚（#251）复原表项。
+func (b *Bridge) removeLocked(k string, id Handle) (sub, bool) {
 	list := b.subs[k]
 	for i, s := range list {
 		if s.id == id {
 			b.subs[k] = append(list[:i], list[i+1:]...)
-			return
+			return s, true
 		}
 	}
+	return sub{}, false
 }
 
 // makeRelay 构造注册给底层的桥接回调：读订阅快照后串行逐个投递，
@@ -292,5 +316,15 @@ func (b *Bridge) makeRelay(dataID, group, k string) ChangeFunc {
 	}
 }
 
+// Remove 从全局桥表移除 client 的桥（生产清理入口，registry#251）。
+//
+// 用于 client 生命周期结束（动态租户、连接池重建等）后释放全局 sync.Map
+// 中的身份键与订阅表。调用方须先经 Unsubscribe/StopListenConfig 摘除全部
+// 订阅——本方法只清本地注册表，不触发底层 Cancel；仍有活跃订阅时移除会让
+// 后续同 client 的 For 构造新桥并重复注册（旧桥的 SDK 监听成为无主泄漏）。
+//
+// 与 [ResetFor] 同语义；ResetFor 保留为测试侧惯用名。
+func Remove(client any) { bridges.Delete(client) }
+
 // ResetFor 清除指定 client 的桥注册（测试专用：避免用例间串表）。
-func ResetFor(client any) { bridges.Delete(client) }
+func ResetFor(client any) { Remove(client) }

@@ -14,7 +14,7 @@ require (
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6
 	github.com/oekit/core v0.18.0
 	github.com/oekit/logx v0.12.1
-	github.com/oekit/pkg v0.57.0
+	github.com/oekit/pkg v0.57.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 

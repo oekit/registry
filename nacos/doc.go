@@ -37,7 +37,7 @@
 //
 // # 服务注册
 //
-// 使用 registry/nacos 包的 Registrar（推荐）或 nns 包的 Bootstrap：
+// 使用 registry/nacosimpl 包的 Registrar（推荐）或 nns 包的 Bootstrap——registry/nacos 是配置源/客户端工厂，不含 SPI 实现：
 //
 //	import nacosimpl "github.com/oekit/registry/nacosimpl"
 //

@@ -21,7 +21,6 @@ require (
 	github.com/oekit/registry v0.8.4
 )
 
-require github.com/oekit/pkg v0.61.1
 require github.com/oekit/pkg v0.61.2
 
 require (

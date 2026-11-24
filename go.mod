@@ -13,7 +13,7 @@ go 1.26.0
 require github.com/oekit/core v0.18.0
 
 // registrymocks 直接消费 pkg/errors.Recovered（#158 panic 收编单源）⇒ pkg 转直接依赖。
-require github.com/oekit/pkg v0.60.0
+require github.com/oekit/pkg v0.61.1
 
 // instancewatcher（#319 自 hertz/nns/health.go 迁入的实例轮询 watcher）依赖
 // logx（日志门面，自身零 require）与 concurrency/async（GoSafe panic 收编）。

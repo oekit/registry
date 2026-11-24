@@ -21,7 +21,7 @@ require (
 	github.com/oekit/registry v0.8.4
 )
 
-require github.com/oekit/pkg v0.61.1
+require github.com/oekit/pkg v0.61.2
 
 require (
 	github.com/alibabacloud-go/alibabacloud-gateway-pop v0.0.6 // indirect

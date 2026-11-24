@@ -3,7 +3,6 @@ package nacos
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"runtime/debug"
 	"slices"
@@ -14,6 +13,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -130,7 +130,7 @@ var _ registry.Subscriber = (*Subscriber)(nil)
 type SubscriberOption func(*Subscriber)
 
 // WithSubscriberGroup 设置订阅器使用的默认服务分组。
-// 默认值 "DEFAULT_GROUP"。
+// 默认值 [registry.DefaultGroup]。
 func WithSubscriberGroup(group string) SubscriberOption {
 	return func(s *Subscriber) { s.group = group }
 }
@@ -144,7 +144,7 @@ func NewSubscriber(client naming_client.INamingClient, opts ...SubscriberOption)
 	}
 	s := &Subscriber{
 		client:   client,
-		group:    "DEFAULT_GROUP",
+		group:    registry.DefaultGroup,
 		subs:     make(map[string][]*vo.SubscribeParam),
 		lastErrs: make(map[string]error),
 		pushNano: make(map[string]int64),
@@ -167,6 +167,10 @@ func NewSubscriber(client naming_client.INamingClient, opts ...SubscriberOption)
 //
 // 同一服务重复 Subscribe 会叠加注册多个回调（SDK 支持同服务多回调），
 // Unsubscribe 时一并移除。
+//
+// ctx 语义（#250）：SDK API 不接收 context，注册以 [invokeWithCtxErr] 竞速
+// 兜底——ctx 已取消/超时快速失败，SDK 调用若已开始会在后台自行完成（结果
+// 丢弃，订阅是否真挂上以 SDK 侧为准；幂等性由 Nacos 侧保证）。
 func (s *Subscriber) Subscribe(ctx context.Context, serviceName string, cb func([]registry.Instance)) error {
 	param := &vo.SubscribeParam{
 		ServiceName: serviceName,
@@ -192,7 +196,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, serviceName string, cb func(
 				log.Error("subscribe callback error (cached view may be stale until next push)",
 					"service", serviceName, logx.ErrKey, err)
 				s.mu.Lock()
-				s.lastErrs[serviceName] = fmt.Errorf("nacosimpl: subscribe push for %s: %w", serviceName, err)
+				s.lastErrs[serviceName] = pkgerrors.Wrapf(err, "nacosimpl: subscribe push for %s", serviceName)
 				s.mu.Unlock()
 				return
 			}
@@ -203,7 +207,11 @@ func (s *Subscriber) Subscribe(ctx context.Context, serviceName string, cb func(
 			cb(toInstances(serviceName, services))
 		},
 	}
-	if err := s.client.Subscribe(param); err != nil {
+	// #250：SDK 调用走 invokeWithCtxErr 漏斗（与 Registrar/Discoverer/
+	// ConfigStore 的 #65/#143 纪律对齐）——Subscribe 的启动路径同样可能
+	// 因 Nacos 不可达/gRPC 建流卡住，调用方的关停/超时预算必须生效；
+	// 此前直接调 SDK，ctx 被完全忽略。
+	if err := invokeWithCtxErr(ctx, func() error { return s.client.Subscribe(param) }); err != nil {
 		return wrapErr("subscribe", serviceName, err)
 	}
 	// #95：留存注册时的 param——Unsubscribe 必须复用同一指针（&param.
@@ -228,6 +236,10 @@ func (s *Subscriber) Subscribe(ctx context.Context, serviceName string, cb func(
 // 旧行为）：SDK 侧无可移除的 wrapper，IsSubscribed=false 直接走 gRPC 层
 // 退订。退订失败的 param 会重新入账——重试时仍复用同一指针，换新指针
 // 将再次变成静默 no-op。
+//
+// ctx 语义（#250）：与 [Subscriber.Subscribe] 相同，以 [invokeWithCtxErr]
+// 竞速兜底——这是关停热路径（nns/client 以 closeCtx 5s 预算调用），Nacos
+// 不可达时必须在预算内返回而不是随 SDK 无限挂起。
 func (s *Subscriber) Unsubscribe(ctx context.Context, serviceName string) error {
 	s.mu.Lock()
 	params := s.subs[serviceName]
@@ -237,7 +249,10 @@ func (s *Subscriber) Unsubscribe(ctx context.Context, serviceName string) error 
 		params = []*vo.SubscribeParam{{ServiceName: serviceName, GroupName: s.group}}
 	}
 	for i, param := range params {
-		if err := s.client.Unsubscribe(param); err != nil {
+		// #250：退订是关停路径（nns/client 以 closeCtx 5s 预算调本方法），
+		// 必须同走 invokeWithCtxErr 漏斗——否则 Nacos 不可达/gRPC 卡死时
+		// 关闭无限挂起，bootstrap 关停预算链断裂。
+		if err := invokeWithCtxErr(ctx, func() error { return s.client.Unsubscribe(param) }); err != nil {
 			// 失败的（含未处理的）param 放回：重试时仍复用同一指针。
 			s.mu.Lock()
 			s.subs[serviceName] = append(s.subs[serviceName], params[i:]...)

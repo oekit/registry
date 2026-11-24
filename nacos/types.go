@@ -1,5 +1,7 @@
 package nacos
 
+import "github.com/oekit/registry"
+
 // Bootstrap holds Nacos connection bootstrap configuration.
 // Embed this in your service's config struct.
 // 所有 yaml tag 统一使用 snake_case。
@@ -15,13 +17,13 @@ type Bootstrap struct {
 	GrpcPort    uint64 `yaml:"grpc_port"`    // gRPC port override (for NodePort: set to container port 9848)
 }
 
-// GroupOrDefault 返回配置分组（#51）：空值回填 "DEFAULT_GROUP"——文档与 yaml
-// 注释宣称的默认此前从未被应用：GetConfig 对空 Group SDK 侧兜底（读路径侥幸
-// 工作），ListenConfig 则直接报错 "Group can not be empty" 且被门面吞掉——
-// 热更从未注册。与 nacosimpl 各构造器的 DEFAULT_GROUP 默认对齐。
+// GroupOrDefault 返回配置分组（#51）：空值回填 [registry.DefaultGroup]——
+// 文档与 yaml 注释宣称的默认此前从未被应用：GetConfig 对空 Group SDK 侧兜底
+// （读路径侥幸工作），ListenConfig 则直接报错 "Group can not be empty" 且被
+// 门面吞掉——热更从未注册。回填与 nacosimpl 各构造器默认同源常量（#214 收口）。
 func (b Bootstrap) GroupOrDefault() string {
 	if b.Group == "" {
-		return "DEFAULT_GROUP"
+		return registry.DefaultGroup
 	}
 	return b.Group
 }

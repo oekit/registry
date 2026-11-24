@@ -51,8 +51,66 @@ func (e *noInstancesError) Error() string { return fmt.Sprintf("no instances for
 func (e *noInstancesError) Unwrap() error { return registry.ErrNoInstances }
 
 // ToInstance 从框架注册信息的通用字段构造 [registry.Instance]，
-// weight <= 0 时使用 defaultWeight 兜底。内部委托 [registry.InfoFrom]，
-// 作为 4 个 registry.go 适配文件权重兜底逻辑的唯一入口。
+// weight<=0 时回退 defaultWeight，defaultWeight 也非法（<=0）时兜底
+// [registry.DefaultInstanceWeight]——恒正，与 [WeightOrDefault] 同口径
+// （#230，兜底链实际三级实现在 [registry.InfoFrom]）。内部委托
+// [registry.InfoFrom]，作为 4 个 registry.go 适配文件权重兜底逻辑的唯一入口。
 func ToInstance(name string, addr net.Addr, weight, defaultWeight int, tags map[string]string) (registry.Instance, error) {
 	return registry.InfoFrom(name, addr, weight, defaultWeight, tags)
+}
+
+// NetworkTCP 是 [InstanceEndpoint] 返回的 network 值：四个 adapter 的实例
+// 转换（InstancesToKitex / InstancesToHertz）均以 "tcp" 为 network，单源收口。
+const NetworkTCP = "tcp"
+
+// InstanceEndpoint 返回实例的框架无关网络端点：network 恒为 "tcp"
+// （[NetworkTCP]），addr 为 IP:Port（net.JoinHostPort，IPv6 自动加方括号）。
+//
+// 消费方：kitex/registry 与 hertz/registry 的实例转换
+// （InstancesToKitex / InstancesToHertz 此前各自 net.JoinHostPort 拷贝一份）；
+// nns 侧经 kitex/nns 的 resolver 复用 InstancesToKitex 单源，不另设转换。
+func InstanceEndpoint(inst registry.Instance) (network, addr string) {
+	return NetworkTCP, inst.Addr()
+}
+
+// WeightOrDefault 回填非法权重：weight <= 0 时使用 defaultWeight 兜底；
+// defaultWeight 也非法（<=0）时兜底到根包 [registry.DefaultInstanceWeight]
+// （#214 常量单源）——保证返回值恒为正，转换产物不再把零/负权重透传给
+// 框架负载均衡器（kitex weighted_balancer 判 "invalid weight" 视作无可用
+// 实例 fail-closed 503，#92 教训）。
+//
+// 消费方：kitex/registry、hertz/registry 的 convert.go（后续接入，替换
+// 各自内联的 weight <= 0 分支）与 nacosimpl Registrar 的注册钳制
+// （#230 收编第三份手写副本；写侧与读侧同口径，防线不再靠副本互救）。
+func WeightOrDefault(weight, defaultWeight float64) float64 {
+	if weight > 0 {
+		return weight
+	}
+	if defaultWeight > 0 {
+		return defaultWeight
+	}
+	return registry.DefaultInstanceWeight
+}
+
+// EnsureNotNil 对必填依赖做构造期 nil fail-fast：dep 为 nil（接口持 nil）
+// 时 panic，消息形如 "<caller> requires non-nil <what>"。
+//
+// 口径与 hertz#219 一致：构造期配置错误启动即暴露，避免运行期空指针拖到
+// 框架内部 goroutine 才炸出「未知来源 panic」。此前只有 hertz 侧两个
+// Registry adapter 有该检查（且 panic 文案各写一份），kitex 侧与 watcher
+// 构造无统一入口——本函数是唯一的口径单源。
+//
+// 用法（adapter 构造器内）：
+//
+//	sdbridge.EnsureNotNil(reg, "hertz: NewRegistry", "registrar")
+//
+// 注意：仅检接口层面的 nil；持有类型化 nil 指针（(*T)(nil) 装箱进接口）
+// 不在本检查范围——与 hertz#219 既有口径一致，不引入反射超集。
+//
+// 消费方：hertz/registry、hertz/nns、kitex/registry、kitex/nns 四个
+// Registry adapter 构造器与 instancewatcher.NewInstanceWatcher（后续接入）。
+func EnsureNotNil(dep any, caller, what string) {
+	if dep == nil {
+		panic(fmt.Sprintf("%s requires non-nil %s", caller, what))
+	}
 }

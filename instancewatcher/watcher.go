@@ -1,0 +1,353 @@
+// Package instancewatcher 实例轮询 watcher——整段自 hertz/nns/health.go
+// 迁入（oekit/hertz#319），hertz/nns 保留 re-export 薄壳；类型名与行为不变，
+// hertz 特有日志组件改注册名（healthLog/"nns-hertz" → log/"registry/instancewatcher"）。
+package instancewatcher
+
+import (
+	"cmp"
+	"context"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
+	"github.com/oekit/registry"
+	"github.com/oekit/registry/sdbridge"
+)
+
+// log 是本包日志组件（SDK/基础包用 logx.Delegating 懒解析，仓规口径）。
+// 迁移前为 hertz/nns 的 healthLog（组件名 "nns-hertz"），随包迁入改注册名。
+var log = logx.Delegating("registry/instancewatcher")
+
+// EventType 实例变更事件类型。
+type EventType int
+
+const (
+	// EventAdded 实例新增事件。
+	EventAdded EventType = iota
+	// EventRemoved 实例移除事件。
+	EventRemoved
+	// EventChanged 实例变更事件。
+	EventChanged
+)
+
+// InstanceEvent 实例变更事件，包含事件类型、服务名和实例列表。
+type InstanceEvent struct {
+	Type      EventType
+	Service   string
+	Instances []registry.Instance
+}
+
+// DefaultDiscoverTimeout 是单次 Discover 的默认超时预算（#231）。
+// 轮询探活属探测类调用，按矩阵口径取 ≤10s。
+const DefaultDiscoverTimeout = 5 * time.Second
+
+// InstanceWatcher 实例轮询 watcher，定期轮询服务实例并在变更时触发回调。
+//
+// 基于 [registry.Discoverer] 接口，与具体注册中心解耦
+// （自 hertz/nns/health.go 迁入，#319）。
+type InstanceWatcher struct {
+	discoverer registry.Discoverer
+	interval   time.Duration
+	// discoverTimeout 是单次 Discover 的超时预算（#231）：>0 每次调用独立
+	// 派生 deadline；<0 表示不设单次预算、沿用 Start 传入的 ctx。
+	discoverTimeout time.Duration
+	services        []string
+	mu              sync.RWMutex
+	cache           map[string][]registry.Instance
+	callbacks       []func(InstanceEvent)
+	stopCh          chan struct{}
+	stopOnce        sync.Once
+	// inflight: serviceName → *atomic.Int32，仍在执行的回调 goroutine 数
+	// （回调异步派发，hertz#167）。若回调挂死，没有该计数则每轮 tick 都会
+	// 新增一个泄漏 goroutine，无上限。计数 >0 时跳过本轮派发（cache 不动，
+	// 排空后重 diff 补发，hertz#133）。
+	inflight sync.Map
+}
+
+// WatchOption InstanceWatcher 的配置选项函数类型。
+type WatchOption func(*InstanceWatcher)
+
+// WithWatchInterval 设置轮询间隔时间。
+//
+// d <= 0 时 panic——构造期配置错误启动即暴露（与 [NewInstanceWatcher]
+// 的 nil discoverer fail-fast 口径一致）。此前无校验：Start 内
+// time.NewTicker(h.interval) 对 0/负值直接 panic，而 Start 由业务自行起
+// goroutine 调用，panic 未包 recover 即进程退出（hertz#218）。
+func WithWatchInterval(d time.Duration) WatchOption {
+	if d <= 0 {
+		panic("instancewatcher: WithWatchInterval requires positive interval")
+	}
+	return func(h *InstanceWatcher) { h.interval = d }
+}
+
+// WithDiscoverTimeout 设置**单次** Discover 的超时预算（#231）。
+//
+// 背景：checkService 此前直接用 Start 传入的 ctx 调 Discover——不响应 ctx
+// 的 Discoverer 一旦挂死，会永久卡住轮询主循环（该服务与后续服务的实例
+// 感知全部停摆，Stop 也无法收回主循环）。本选项为每次 Discover 独立派生
+// 预算，前一个服务的耗时不会挤占后一个的预算。
+//
+// 语义：
+//   - d > 0：每次 Discover 独立 context.WithTimeout(ctx, d)；
+//   - d == 0：使用 [DefaultDiscoverTimeout]（5s，探测类默认值 ≤10s）；
+//   - d < 0：显式禁用单次预算，Discover 直接使用 Start 传入的 ctx（与
+//     lifecycle.ReadyProbe.WithProbeTimeout 的负数语义对齐）。
+//
+// 预算是协作式的：Discover 实现必须尊重 ctx 才会在到点时返回；不响应 ctx
+// 的实现仍会阻塞主循环——**超时只能保证「感知不到就报错继续」对守规矩的
+// 实现成立**（Go 无法强杀 goroutine）。
+func WithDiscoverTimeout(d time.Duration) WatchOption {
+	if d == 0 {
+		d = DefaultDiscoverTimeout
+	}
+	return func(h *InstanceWatcher) { h.discoverTimeout = d }
+}
+
+// WithWatchServices 设置需要轮询的服务列表。
+//
+// hertz#222：入口深拷贝落库——此前直接持有调用方切片（别名写穿），调用方
+// 构造后复用/改写同一底层数组会静默改变运行中 watcher 的服务集合
+// （checkAll 每轮直接 range h.services）。与包内对同一风险面的既有纪律
+// 对齐（GetHealthyInstances 深拷贝出参、cache 写入 deepCopyInstances、
+// 回调事件逐回调再拷贝）。
+func WithWatchServices(services ...string) WatchOption {
+	return func(h *InstanceWatcher) { h.services = slices.Clone(services) }
+}
+
+// WithWatchCallback 添加实例变更事件回调函数。
+func WithWatchCallback(fn func(InstanceEvent)) WatchOption {
+	return func(h *InstanceWatcher) { h.callbacks = append(h.callbacks, fn) }
+}
+
+// NewInstanceWatcher 根据服务发现器和可选参数创建实例轮询 watcher。
+//
+// discoverer 不能为 nil，否则 panic（构造期 fail-fast，经
+// [sdbridge.EnsureNotNil] 单源，口径同 hertz#219）。
+func NewInstanceWatcher(discoverer registry.Discoverer, opts ...WatchOption) *InstanceWatcher {
+	sdbridge.EnsureNotNil(discoverer, "instancewatcher: NewInstanceWatcher", "discoverer")
+	h := &InstanceWatcher{
+		discoverer:      discoverer,
+		interval:        10 * time.Second,
+		discoverTimeout: DefaultDiscoverTimeout,
+		cache:           make(map[string][]registry.Instance),
+		stopCh:          make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// Start 启动 watcher，定期轮询服务实例状态直到上下文取消或调用 Stop。
+// nil ctx 按 Background 处理（core#159 全仓口径）——nil 进 select 的
+// ctx.Done() 直接 nil 解引用 panic，兜底后只能经 Stop 退出。
+func (h *InstanceWatcher) Start(ctx context.Context) {
+	// 口径单源：pkg/contextx.OrBackground（#231）。
+	ctx = contextx.OrBackground(ctx)
+	ticker := time.NewTicker(h.interval)
+	defer ticker.Stop()
+
+	h.checkAll(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.stopCh:
+			return
+		case <-ticker.C:
+			h.checkAll(ctx)
+		}
+	}
+}
+
+// Stop 停止 watcher（sync.Once 幂等，可重复调用）。
+func (h *InstanceWatcher) Stop() {
+	h.stopOnce.Do(func() {
+		close(h.stopCh)
+	})
+}
+
+// GetHealthyInstances 获取指定服务缓存的健康实例列表（深拷贝出参）。
+func (h *InstanceWatcher) GetHealthyInstances(serviceName string) []registry.Instance {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	instances, ok := h.cache[serviceName]
+	if !ok {
+		return nil
+	}
+	return deepCopyInstances(instances)
+}
+
+func (h *InstanceWatcher) checkAll(ctx context.Context) {
+	for _, svc := range h.services {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		h.checkService(ctx, svc)
+	}
+}
+
+func (h *InstanceWatcher) checkService(ctx context.Context, serviceName string) {
+	// 单次 Discover 独立预算（#231）：从调用方 ctx 派生，前序服务耗时不吃
+	// 后续预算；负数 = 显式禁用（直接用调用方 ctx）。
+	discoverCtx := ctx
+	if h.discoverTimeout > 0 {
+		var cancel context.CancelFunc
+		discoverCtx, cancel = context.WithTimeout(ctx, h.discoverTimeout)
+		defer cancel()
+	}
+	current, err := h.discoverer.Discover(discoverCtx, serviceName)
+	if err != nil {
+		log.Error("health check failed", "service", serviceName, logx.ErrKey, err)
+		return
+	}
+
+	// 深拷贝实例列表，防止回调或外部代码修改缓存数据
+	copied := deepCopyInstances(current)
+
+	h.mu.Lock()
+	prev := h.cache[serviceName]
+	h.mu.Unlock()
+
+	if !instancesChanged(prev, copied) {
+		// 无变更：仅刷新缓存内容（与 prev 等价，覆盖元数据等不可比字段）。
+		h.mu.Lock()
+		h.cache[serviceName] = copied
+		h.mu.Unlock()
+		return
+	}
+
+	// 上一轮回调尚未跑完（慢/挂死回调仍在异步执行，hertz#167）时跳过本轮
+	// 派发，防止挂死回调导致 goroutine 每轮 tick 无界累积。
+	// ⚠️ 跳过时**不得更新 cache**（hertz#133）：cache 是 diff 的 prev 基线，
+	// 若先把本轮变更消费进 cache 再跳过派发，回调恢复后下一轮
+	// instancesChanged 必为 false——变更事件被永久吞掉，订阅方（客户端 LB
+	// 缓存类）停留在旧实例集且无任何重试/补发。保持 cache 不动 ⇒ 回调排空
+	// 后的下一轮会重新发现同一变更并重新派发（cache 与订阅方一致地「暂时
+	// 落后」，而非「永久分叉」）。
+	pending, _ := h.inflight.LoadOrStore(serviceName, new(atomic.Int32))
+	pendingCount := pending.(*atomic.Int32)
+	if pendingCount.Load() > 0 {
+		log.Warn("previous callback dispatch still running, skip this round (cache untouched, will re-diff)", "service", serviceName)
+		return
+	}
+
+	evt := InstanceEvent{
+		Type:    EventChanged,
+		Service: serviceName,
+		// 回调专属深拷贝：copied 同时是 h.cache 的存储值，若直接交给回调，
+		// 回调中的修改会污染缓存与下一次 diff 的 prev 基线（review L8）
+		Instances: deepCopyInstances(copied),
+	}
+	if len(prev) == 0 && len(copied) > 0 {
+		evt.Type = EventAdded
+	} else if len(copied) == 0 && len(prev) > 0 {
+		evt.Type = EventRemoved
+	}
+	h.mu.RLock()
+	callbacks := make([]func(InstanceEvent), len(h.callbacks))
+	copy(callbacks, h.callbacks)
+	h.mu.RUnlock()
+
+	// 派发决策已通过：此刻才把本轮结果落进 cache（prev 基线推进为本次
+	// 派发的内容，cache 始终反映「已派发（或正在派发）的最新实例集」）。
+	h.mu.Lock()
+	h.cache[serviceName] = copied
+	h.mu.Unlock()
+
+	// 回调异步派发（hertz#167）：每个回调独立 goroutine（async.GoSafe，
+	// panic 收编对齐仓内并发口径），checkService/ticker 主循环不再同步等待
+	// 回调——修复前单回调在主循环内最多同步等 5s（3 回调各挂 5s = 本轮
+	// 15s），期间所有服务的 Discover 与变更检测被压后、ticker tick 被丢弃，
+	// 单个挂死消费者把全部服务的实例感知延迟拖到分钟级。异步后主循环只做
+	// 发现与派发决策；慢/挂死回调的影响被 inflight 计数（hertz#133）收敛为
+	// 「该服务跳过派发且 cache 不动」，排空后下一轮重 diff 补发。
+	//
+	// 派发决策与 inflight 计数仍在调用方 goroutine 内同步完成（上面的
+	// LoadOrStore + 下面的 Add），派发仅执行体异步——「同服务去重」的
+	// 判定窗口保持原子。
+	for _, cb := range callbacks {
+		callback := cb
+		// 回调间隔离：并发执行下各回调拿各自的深拷贝。共享同一 evt 时
+		// 一个回调改 Instances（含 Metadata map）会与其它回调竞争——
+		// 串行派发时代仅靠「回调别改事件」的自觉，并发后必须显式隔离。
+		cbEvt := evt
+		cbEvt.Instances = deepCopyInstances(evt.Instances)
+		pendingCount.Add(1)
+		async.GoSafe(func() {
+			defer pendingCount.Add(-1)
+			callback(cbEvt)
+		})
+	}
+}
+
+func instancesChanged(a, b []registry.Instance) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	// 排序后比较，避免顺序不同导致误报变更
+	sortedA := sortInstances(a)
+	sortedB := sortInstances(b)
+	for i := range sortedA {
+		if sortedA[i].IP != sortedB[i].IP || sortedA[i].Port != sortedB[i].Port || sortedA[i].Weight != sortedB[i].Weight {
+			return true
+		}
+		if !metadataEqual(sortedA[i].Metadata, sortedB[i].Metadata) {
+			return true
+		}
+	}
+	return false
+}
+
+// sortInstances 按 IP:Port 排序实例列表（返回副本，不修改原 slice）。
+func sortInstances(instances []registry.Instance) []registry.Instance {
+	sorted := make([]registry.Instance, len(instances))
+	copy(sorted, instances)
+	slices.SortFunc(sorted, func(a, b registry.Instance) int {
+		if c := strings.Compare(a.IP, b.IP); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Port, b.Port)
+	})
+	return sorted
+}
+
+// metadataEqual 比较两个 metadata map 是否相等。
+func metadataEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// deepCopyInstances 深拷贝实例列表（含 Metadata map）。
+func deepCopyInstances(instances []registry.Instance) []registry.Instance {
+	if instances == nil {
+		return nil
+	}
+	out := make([]registry.Instance, len(instances))
+	copy(out, instances)
+	for i := range out {
+		if out[i].Metadata != nil {
+			meta := make(map[string]string, len(out[i].Metadata))
+			for k, v := range out[i].Metadata {
+				meta[k] = v
+			}
+			out[i].Metadata = meta
+		}
+	}
+	return out
+}

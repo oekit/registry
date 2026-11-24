@@ -2,12 +2,13 @@ package nacos
 
 import (
 	"context"
-	"fmt"
 	"runtime/debug"
 	"sync/atomic"
 
 	"github.com/oekit/core/config"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
+	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry/configbridge"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
@@ -52,7 +53,8 @@ func (s *ConfigSource) Read() ([]byte, error) {
 		Group:  s.cfg.GroupOrDefault(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get nacos config [%s/%s]: %w", s.cfg.Group, s.cfg.DataId, err)
+		// #196：错误面与请求面同源（GroupOrDefault），口径同 LoadAndMerge。
+		return nil, errors.Wrapf(err, "get nacos config [%s/%s]", s.cfg.GroupOrDefault(), s.cfg.DataId)
 	}
 	return []byte(content), nil
 }
@@ -74,6 +76,11 @@ func (s *ConfigSource) Read() ([]byte, error) {
 // 「配置中心改了下不去」的故障排查时不会先想到看启动日志。失败即需要
 // fail-fast 的调用方应在 Watch 后检查 Err()。
 func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
+	// nil ctx 按 Background 处理（core#159 全仓口径，registry#240）：本方法
+	// 实现 core config.ConfigSource（void 签名不可改），派发闭包与收尾
+	// goroutine 都直接 select/<-ctx.Done()，nil 进来即 nil 解引用 panic——
+	// void 面无法经返回值上抛，入口兜底是唯一出口。
+	ctx = contextx.OrBackground(ctx)
 	// registry#177：监听经 configbridge 多播桥——SDK 的 ListenConfig 按 key
 	// 单槽（同 key 二次注册新回调被静默丢弃、Cancel 按 key 整删互杀），
 	// 桥把单槽抬升为多播：与同 client 的 config_loader/ConfigStore 共享
@@ -95,6 +102,10 @@ func (s *ConfigSource) Watch(ctx context.Context, onChange func()) {
 		s.listenErr.Store(&err)
 		return
 	}
+	// #251：成功注册必须清掉上一次的失败状态——Err() 的文档承诺是
+	// nil = 监听已挂上。此前只在失败时 Store，一次失败后即使调用方重试
+	// 成功（或 SDK 恢复后重连挂上），Err() 仍永久返回旧错误串。
+	s.listenErr.Store(nil)
 	// #126：ctx 取消即摘除本 watcher 的订阅（桥按句柄 Unsubscribe——只有
 	// 最后一个订阅者离开才触底层 Cancel，不再按 key 整删互杀）。此前
 	// Watch 无任何停止出口，被取消的 watcher 的监听永不释放（泄漏 + 推送空跑）。

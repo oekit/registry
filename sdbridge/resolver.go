@@ -2,8 +2,8 @@ package sdbridge
 
 import (
 	"context"
-	"fmt"
 
+	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -16,13 +16,13 @@ type FetchErrFunc func(errPrefix, service string, err error) error
 // PlainFetchErr 返回 "<errPrefix>: <err>" 格式的错误（nns 系适配器风格，
 // 数据源错误已自带服务上下文，不再重复服务名）。
 func PlainFetchErr(errPrefix, _ string, err error) error {
-	return fmt.Errorf("%s: %w", errPrefix, err)
+	return errors.Wrapf(err, "%s", errPrefix)
 }
 
 // DiscoverFetchErr 返回 "<errPrefix>: discover <service>: <err>" 格式的错误
 // （registry 系适配器风格，附加服务名与动词）。
 func DiscoverFetchErr(errPrefix, service string, err error) error {
-	return fmt.Errorf("%s: discover %q: %w", errPrefix, service, err)
+	return errors.Wrapf(err, "%s: discover %q", errPrefix, service)
 }
 
 // ResolverCoreOption 是 [ResolverCore] 的配置选项函数类型。
@@ -94,7 +94,7 @@ func (c *ResolverCore) Fetch(ctx context.Context, service string) ([]registry.In
 	}
 	insts, err = Validate(insts, service)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", c.errPrefix, err)
+		return nil, errors.Wrapf(err, "%s", c.errPrefix)
 	}
 	return insts, nil
 }

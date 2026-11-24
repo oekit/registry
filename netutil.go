@@ -1,8 +1,6 @@
 package registry
 
 import (
-	"errors"
-	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -10,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/oekit/core/network"
+	"github.com/oekit/pkg/errors"
 )
 
 // ErrLoopbackAddr 表示解析出的注册地址是回环地址（127.0.0.0/8、::1）。
@@ -100,21 +99,21 @@ var ErrNonRoutableAddr = errors.New("registry: host is not routable from other n
 // 应委托至此，避免逻辑重复。
 func ParseAddr(addr net.Addr) (string, int, error) {
 	if addr == nil {
-		return "", 0, fmt.Errorf("addr is nil")
+		return "", 0, errors.New("addr is nil")
 	}
 	host, portStr, err := net.SplitHostPort(addr.String())
 	if err != nil {
-		return "", 0, fmt.Errorf("split host port %q: %w", addr.String(), err)
+		return "", 0, errors.Wrapf(err, "split host port %q", addr.String())
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return "", 0, fmt.Errorf("parse port %q: %w", portStr, err)
+		return "", 0, errors.Wrapf(err, "parse port %q", portStr)
 	}
 	// #104：端口维度与 host 维度同口径 fail-closed——语法合法但不可拨通的
 	// 端口（-1 / 0 / 70000）此前原样放行且 err==nil，违背「对其他节点可拨号」
 	// 的文档承诺。在 host 兜底解析前先拦，让配错端口 fail-fast、不带噪声。
 	if port < 1 || port > 65535 {
-		return "", 0, fmt.Errorf("refusing port %d (must be within 1..65535 to be dialable by other nodes): %w", port, ErrInvalidPort)
+		return "", 0, errors.Wrapf(ErrInvalidPort, "refusing port %d (must be within 1..65535 to be dialable by other nodes)", port)
 	}
 	// #157：未指定地址兜底的触发条件从字面量比对改为 netip 语义判定——
 	// ::0 / 0:0:0:0:0:0:0:0 / ::ffff:0.0.0.0 与 "::"/"0.0.0.0" 同语义
@@ -129,10 +128,10 @@ func ParseAddr(addr net.Addr) (string, int, error) {
 		if raw := strings.TrimSpace(os.Getenv("POD_IP")); raw != "" {
 			if cfgIP, perr := netip.ParseAddr(raw); perr == nil {
 				if cfgIP.IsLoopback() {
-					return "", 0, fmt.Errorf("refusing loopback host %q (from POD_IP): %w", raw, ErrLoopbackAddr)
+					return "", 0, errors.Wrapf(ErrLoopbackAddr, "refusing loopback host %q (from POD_IP)", raw)
 				}
 				if nonRoutableHost(cfgIP) {
-					return "", 0, fmt.Errorf("refusing non-routable host %q (from POD_IP): %w", raw, ErrNonRoutableAddr)
+					return "", 0, errors.Wrapf(ErrNonRoutableAddr, "refusing non-routable host %q (from POD_IP)", raw)
 				}
 			}
 		}
@@ -143,13 +142,13 @@ func ParseAddr(addr net.Addr) (string, int, error) {
 	// 误判成垃圾而失去「给出专门文案」的机会。
 	ip, err := netip.ParseAddr(host)
 	if err != nil {
-		return "", 0, fmt.Errorf("refusing non-IP host %q (must be dialable by other nodes): %w", host, ErrInvalidHostAddr)
+		return "", 0, errors.Wrapf(ErrInvalidHostAddr, "refusing non-IP host %q (must be dialable by other nodes)", host)
 	}
 	if ip.IsLoopback() {
-		return "", 0, fmt.Errorf("refusing loopback host %q: %w", host, ErrLoopbackAddr)
+		return "", 0, errors.Wrapf(ErrLoopbackAddr, "refusing loopback host %q", host)
 	}
 	if ip.Zone() != "" {
-		return "", 0, fmt.Errorf("refusing zoned IPv6 host %q (zone is node-local, not dialable by other nodes): %w", host, ErrInvalidHostAddr)
+		return "", 0, errors.Wrapf(ErrInvalidHostAddr, "refusing zoned IPv6 host %q (zone is node-local, not dialable by other nodes)", host)
 	}
 	// #157：可路由性判据——链路本地单播（169.254/16 含云元数据端点 +
 	// fe80::/10）、组播（224/4 + ff00::/8）、受限广播（255.255.255.255）、
@@ -157,12 +156,12 @@ func ParseAddr(addr net.Addr) (string, int, error) {
 	// 与 zoned 链路本地的既有拒绝收敛为同一结论（不可拨号），判据不再因
 	// 拼写差异分裂。
 	if nonRoutableHost(ip) {
-		return "", 0, fmt.Errorf("refusing non-routable host %q (link-local/multicast/broadcast/this-network are not dialable by other nodes): %w", host, ErrNonRoutableAddr)
+		return "", 0, errors.Wrapf(ErrNonRoutableAddr, "refusing non-routable host %q (link-local/multicast/broadcast/this-network are not dialable by other nodes)", host)
 	}
 	if ip.Unmap().IsUnspecified() {
 		// 防御位：未指定地址理应已走兜底（GetPodIP 产出不会是未指定拼写）；
 		// 若兜底仍产出未指定地址，按不可路由拒绝而非静默注册通配地址。
-		return "", 0, fmt.Errorf("refusing unspecified host %q (wildcard address is not dialable by other nodes): %w", host, ErrNonRoutableAddr)
+		return "", 0, errors.Wrapf(ErrNonRoutableAddr, "refusing unspecified host %q (wildcard address is not dialable by other nodes)", host)
 	}
 	return host, port, nil
 }

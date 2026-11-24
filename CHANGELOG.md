@@ -1,3 +1,56 @@
+## [v0.8.4] — 2026-11-23
+
+- build: 依赖地板对齐（矩阵地板波次）——新地板：github.com/oekit/pkg v0.60.0 。零行为变化；已发布产物的 go.mod 地板此前滞后于矩阵登记版本，本版把新地板焊进已发布产物。
+
+## [v0.8.3] — 2026-11-21
+
+- - fix: nacosimpl Subscribe/Unsubscribe 改走 invokeWithCtxErr、ListenConfig 整段走 invokeWithCtx（#250）
+- fix: configbridge regMu 去除（per-key pending 占位，慢首拉不阻塞全 client）（#250）
+- fix: instancewatcher WithDiscoverTimeout 每次 Discover 独立预算——不响应 ctx 的 Discoverer 不再卡死轮询主循环（#231）
+- fix: config_source Err() 成功后恢复、config_loader 新增 ListenCtx、nacosimpl Deregister 复用 validateInstance、configbridge Cancel 失败回滚 + Remove 入口（#251）
+
+关联问题单：registry#250、registry#251、registry#231。
+
+## [v0.8.2] — 2026-11-20
+
+- fix(nacosimpl): invokeWithCtx 公共漏斗入口补 nil-ctx 兜底——#231 同文件只修 panic 半边，Discoverer/ConfigStore/Registrar 全部 SPI 入口经此漏斗；ConfigStore.ListenConfig/StopListenConfig 独立预检与 nacos ConfigSource.Watch 一并兜底（#240）
+docs(sdbridge): import allowlist 对齐实况（pkg 已进禁令域豁免）；三处"（后续接入）"进度注收敛为点名四个消费文件（#241）
+
+## [v0.8.1] — 2026-11-19
+
+- 第二轮重复逻辑深挖审计（2026-11-19）registry 修复与收敛：
+
+- fix: 权重兜底链收口恒正单口径——InfoFrom 补第三级兜底（w<=dw<=0 落 DefaultInstanceWeight），与 sdbridge.WeightOrDefault 同口径；此前 defaultWeight 也非法时产出 Weight<=0 实例写出 SPI，防线靠 nacosimpl 手写钳制副本互救；nacosimpl 手写钳制收编为 WeightOrDefault 引用（#230）
+- fix: nacosimpl invokeWithCtx 的 panic 收编由 %v 拍平改走 pkg/errors.Recovered 单源——panic 值为 error 时身份经 Unwrap 透传，errors.Is/As 可达（core#136 口径，B13 同族残留面）（#231）
+- refactor: instancewatcher.Start 入口与 sdbridge.withBudget 手写 nil-ctx 兜底接 contextx.OrBackground（#231）
+
+关联问题单：registry#230、registry#231。
+
+## [v0.8.0] — 2026-11-18
+
+- sdbridge 新增注册预算与构造帮助:RegisterWithBudget/DeregisterWithBudget(DefaultRegisterBudget=3s,kitex#191/#212 口径收口)/InstanceEndpoint/WeightOrDefault/EnsureNotNil——根治 hertz/kitex 四 adapter 孪生漂移(#216);新包 instancewatcher:InstanceWatcher 实例轮询 watcher 自 hertz/nns/health.go 迁入,零框架依赖机制件归位(#319)
+
+关联问题单：registry#216。
+
+## [v0.7.0] — 2026-11-18
+
+- 导出 DefaultGroup/DefaultInstanceWeight 常量收口,消除两仓 6+ 处硬编码靠注释互指(#214);nacosimpl Registrar 入口补端口校验 ErrInvalidPort,负端口不再 uint64 溢出(#215)
+
+关联问题单：registry#214、registry#215。
+
+## [v0.6.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至最新已发布
+
+## [v0.6.1] — 2026-11-15
+
+- 热深厚拷贝改反射单源（#195）：cloneValue JSON 往返换 pkg/reflectx.DeepCopy，未导出字段与引用字段全保，func/chan 不再被跳过
+- 错误面分组与请求面同源（#196）：LoadAndMerge/ConfigSource.Read 的 cfg.Group 改 GroupOrDefault()
+- parseAddr 端口范围校验（#197）：1-65535 入口拒绝包 ErrInvalidPort，GrpcPort 非 0 同门
+- Discoverer 缺省错误路径归位（#198）：缺省回落先判 m.Err 返回 (nil, err)，与 ErrMap 同形状
+
+关联问题单：registry#195、registry#196、registry#197、registry#198。
+
 ## [nacosimpl/v0.3.0] — 2026-11-13
 
 - feat(configbridge): 新增多播桥子包——nacos-sdk ListenConfig 单槽语义抬升为多播（#177 P1）。同 (dataID, group) 重复注册新回调静默失效、Cancel 按 key 整删互杀的两处病灶闭合：按 client 身份共享表、底层只注册一次、句柄独立摘除、最后一个订阅者离开才 Cancel；per-key 派发锁 + 逐订阅 panic 隔离。nacosimpl ConfigStore（句柄栈 LIFO 适配无句柄接口，与 etcdx 替换语义同向）、nacos config_source（ctx 按句柄摘除）、config_loader（背压只拖本 key）三处接入。行为变更：无订阅 Stop 从无条件调 SDK Cancel 改为幂等 no-op。

@@ -239,6 +239,57 @@ func TestRegistrar_Register_ReturnedFalse(t *testing.T) {
 	}
 }
 
+// TestRegistrar_Register_InvalidPort covers the #215 local port guard:
+// callers using Registrar directly bypass ParseAddr/buildInstance, so a
+// negative port must fail fast with ErrInvalidPort instead of silently
+// overflowing uint64(inst.Port) into 18446744073709551615 inside the SDK
+// param. The SDK call must not be attempted at all.
+func TestRegistrar_Register_InvalidPort(t *testing.T) {
+	called := false
+	stub := &stubNamingClient{
+		regInstanceFunc: func(_ vo.RegisterInstanceParam) (bool, error) {
+			called = true
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+
+	for _, port := range []int{-1, 0, 65536} {
+		err := r.Register(context.Background(), registry.Instance{Service: "s", IP: "1.1.1.1", Port: port})
+		if err == nil {
+			t.Fatalf("expected error for port %d, got nil", port)
+		}
+		if !errors.Is(err, ErrInvalidPort) {
+			t.Errorf("expected errors.Is(err, ErrInvalidPort) for port %d, got: %v", port, err)
+		}
+		if called {
+			t.Errorf("SDK RegisterInstance must not be called for invalid port %d", port)
+			called = false
+		}
+	}
+}
+
+// TestRegistrar_Register_PortBoundaries pins the valid range [1, 65535]:
+// both ends must pass through to the SDK untouched.
+func TestRegistrar_Register_PortBoundaries(t *testing.T) {
+	var ports []uint64
+	stub := &stubNamingClient{
+		regInstanceFunc: func(p vo.RegisterInstanceParam) (bool, error) {
+			ports = append(ports, p.Port)
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+	for _, port := range []int{1, 65535} {
+		if err := r.Register(context.Background(), registry.Instance{Service: "s", IP: "1.1.1.1", Port: port}); err != nil {
+			t.Errorf("Register port %d: %v", port, err)
+		}
+	}
+	if len(ports) != 2 || ports[0] != 1 || ports[1] != 65535 {
+		t.Errorf("expected SDK ports [1 65535], got %v", ports)
+	}
+}
+
 // TestRegistrar_Deregister_HappyPath covers the Deregister happy path.
 func TestRegistrar_Deregister_HappyPath(t *testing.T) {
 	called := false
@@ -274,6 +325,39 @@ func TestRegistrar_Deregister_SDKError(t *testing.T) {
 	}
 	if !contains(err.Error(), "deregister") {
 		t.Errorf("expected error to mention 'deregister', got: %v", err)
+	}
+}
+
+// TestRegistrar_Deregister_InvalidPort 是 #251 的回归钉：Deregister 此前
+// 直接 uint64(inst.Port)（负端口静默溢出成 18446744073709551615），把
+// 对不上真实实例的反注册请求发给 Nacos——失败后残留幽灵实例。现在与
+// Register 共用 validateInstance：非法端口入口即返回 ErrInvalidPort，
+// SDK 调用不得发起。
+func TestRegistrar_Deregister_InvalidPort(t *testing.T) {
+	called := false
+	stub := &stubNamingClient{
+		deregInstanceFunc: func(_ vo.DeregisterInstanceParam) (bool, error) {
+			called = true
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+
+	for _, port := range []int{-1, 0, 65536} {
+		err := r.Deregister(context.Background(), registry.Instance{Service: "s", IP: "1.1.1.1", Port: port})
+		if err == nil {
+			t.Fatalf("expected error for port %d, got nil", port)
+		}
+		if !errors.Is(err, ErrInvalidPort) {
+			t.Errorf("expected errors.Is(err, ErrInvalidPort) for port %d, got: %v", port, err)
+		}
+		if !contains(err.Error(), "deregister") {
+			t.Errorf("expected error to mention 'deregister' for port %d, got: %v", port, err)
+		}
+		if called {
+			t.Errorf("SDK DeregisterInstance must not be called for invalid port %d", port)
+			called = false
+		}
 	}
 }
 
@@ -838,6 +922,156 @@ func TestInvokeWithCtx_PanicBecomesError(t *testing.T) {
 	}
 }
 
+// sdkPanicError 是 panic 身份测试用的自定义错误类型：指针可判同一，
+// errors.As 取回的必须是 panic 出去的**同一个**值，而非等值新实例。
+type sdkPanicError struct{ msg string }
+
+func (e *sdkPanicError) Error() string { return e.msg }
+
+// TestInvokeWithCtx_PanicIdentityPreserved panic 值为 error 时身份必须
+// 透传（#231，core#136 单源口径）：收编走 pkg/errors.Recovered 后
+// errors.As 能取回原 error 值、errors.Is 直达 sentinel——此前 Newf %v
+// 拍平成纯文本，两者均不可达。
+func TestInvokeWithCtx_PanicIdentityPreserved(t *testing.T) {
+	boom := &sdkPanicError{msg: "sdk exploded"}
+	_, err := invokeWithCtx(context.Background(), func() (bool, error) {
+		panic(boom)
+	})
+	if err == nil {
+		t.Fatal("expected error from panicked SDK call, got nil")
+	}
+	var got *sdkPanicError
+	if !errors.As(err, &got) {
+		t.Fatalf("errors.As cannot retrieve the original error value, err = %v", err)
+	}
+	if got != boom {
+		t.Fatalf("errors.As retrieved %p, want the exact panicked value %p", got, boom)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("errors.Is(err, panicked value) = false, err = %v", err)
+	}
+	if !contains(err.Error(), "panicked") {
+		t.Errorf("err = %v, want panic semantic prefix preserved", err)
+	}
+}
+
+// --- #240 回归钉（nil ctx 兜底）---
+//
+// invokeWithCtx 是 Discoverer/Registrar/ConfigStore SPI 入口的公共漏斗，
+// nil ctx 进 ctx.Err()/ctx.Done() 直接 nil 解引用 panic（#231 修了 panic
+// 收编半边，nil-ctx 半边漏了）。入口经 contextx.OrBackground 兜底为
+// Background 后正常走 SDK 调用——对照 instancewatcher 的
+// TestInstanceWatcher_StartNilCtx 形态。
+
+// TestInvokeWithCtx_NilCtx_NoPanic 漏斗本体钉：nil ctx 归一为 Background
+// 后正常执行 fn 并返回其结果（invokeWithCtxErr 经委托同享）。
+func TestInvokeWithCtx_NilCtx_NoPanic(t *testing.T) {
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	got, err := invokeWithCtx(nil, func() (string, error) { return "ok", nil })
+	if err != nil {
+		t.Fatalf("invokeWithCtx(nil): %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("invokeWithCtx(nil) = %q, want \"ok\"", got)
+	}
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := invokeWithCtxErr(nil, func() error { return nil }); err != nil {
+		t.Fatalf("invokeWithCtxErr(nil): %v", err)
+	}
+}
+
+// TestDiscoverer_Discover_NilCtx 发现面 nil ctx 不得 panic，且 SDK 调用
+// 正常执行、结果正常返回。
+func TestDiscoverer_Discover_NilCtx(t *testing.T) {
+	stub := &stubNamingClient{
+		selectInstancesFunc: func(_ vo.SelectInstancesParam) ([]model.Instance, error) {
+			return []model.Instance{{Ip: "10.0.0.1", Port: 8080, Weight: 10}}, nil
+		},
+	}
+	d, _ := NewDiscoverer(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	got, err := d.Discover(nil, "svc-a")
+	if err != nil {
+		t.Fatalf("Discover(nil): %v", err)
+	}
+	if len(got) != 1 || got[0].IP != "10.0.0.1" {
+		t.Fatalf("Discover(nil) = %+v, want 1 instance 10.0.0.1", got)
+	}
+}
+
+// TestRegistrar_Register_NilCtx 写入口 nil ctx 不得 panic，且 SDK 注册
+// 正常执行（修复前 nil 进漏斗入口的 ctx.Err() 直接 panic）。
+func TestRegistrar_Register_NilCtx(t *testing.T) {
+	called := make(chan struct{}, 1)
+	stub := &stubNamingClient{
+		regInstanceFunc: func(_ vo.RegisterInstanceParam) (bool, error) {
+			called <- struct{}{}
+			return true, nil
+		},
+	}
+	r, _ := NewRegistrar(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := r.Register(nil, registry.Instance{Service: "s", IP: "1.1.1.1", Port: 1}); err != nil {
+		t.Fatalf("Register(nil): %v", err)
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("nil ctx 应按 Background 正常发起 SDK RegisterInstance")
+	}
+}
+
+// TestConfigStore_GetConfig_NilCtx config 读面 nil ctx 不得 panic。
+func TestConfigStore_GetConfig_NilCtx(t *testing.T) {
+	stub := &stubConfigClient{
+		getConfigFunc: func(_ vo.ConfigParam) (string, error) {
+			return "v", nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	got, err := cs.GetConfig(nil, "k", "G")
+	if err != nil {
+		t.Fatalf("GetConfig(nil): %v", err)
+	}
+	if got != "v" {
+		t.Fatalf("GetConfig(nil) = %q, want \"v\"", got)
+	}
+}
+
+// TestConfigStore_ListenStop_NilCtx 监听面 nil ctx 不得 panic：ListenConfig/
+// StopListenConfig 的 ctx.Err() 预检不在 invokeWithCtx 漏斗内（#143 本地
+// 登记语义），需要各自的 OrBackground 兜底。
+func TestConfigStore_ListenStop_NilCtx(t *testing.T) {
+	canceled := make(chan struct{}, 1)
+	stub := &stubConfigClient{
+		listenConfigFunc: func(_ vo.ConfigParam) error { return nil },
+		cancelListenConfigFunc: func(_ vo.ConfigParam) error {
+			canceled <- struct{}{}
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := cs.ListenConfig(nil, "k", "G", func(string) {}); err != nil {
+		t.Fatalf("ListenConfig(nil): %v", err)
+	}
+	//nolint:staticcheck // SA1012 故意传 nil，验证 nil ctx 兜底不 panic（#240）
+	if err := cs.StopListenConfig(nil, "k", "G"); err != nil {
+		t.Fatalf("StopListenConfig(nil): %v", err)
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("nil ctx 应按 Background 正常委托 SDK CancelListenConfig")
+	}
+}
+
 func indexOfSub(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
@@ -1135,9 +1369,9 @@ func TestConfigStore_StopListenConfig_PreCanceledCtx(t *testing.T) {
 	}
 }
 
-// TestConfigStore_ListenConfig_PreCanceledCtx：ListenConfig 注册本身做进入前
-// 预检（#143）——ctx 已取消时不发起 SDK 注册，onChange 不受 ctx 管理（取消
-// 靠 StopListenConfig，godoc 钉明）。
+// TestConfigStore_ListenConfig_PreCanceledCtx：ListenConfig 整段登记走
+// invokeWithCtx 漏斗（#143/#250）——ctx 已取消时不发起 SDK 注册；
+// onChange 不受 ctx 管理（取消靠 StopListenConfig，godoc 钉明）。
 func TestConfigStore_ListenConfig_PreCanceledCtx(t *testing.T) {
 	called := make(chan vo.ConfigParam, 1)
 	stub := &stubConfigClient{
@@ -1500,4 +1734,150 @@ func TestConfigStore_MulticastSameKeySameStore(t *testing.T) {
 	if len(gotA) != 2 || gotA[1] != "v2" {
 		t.Fatalf("★ 幸存订阅者 A 应继续收到推送（互杀回归）: A=%v", gotA)
 	}
+}
+
+// --- registry#250：Subscribe/Unsubscribe/ListenConfig 走 invokeWithCtx 漏斗 ---
+
+// TestSubscriber_Subscribe_PreCanceledCtx 预取消 ctx 必须快速失败且不触
+// SDK（此前 Subscribe 直接调 SDK，ctx 被完全忽略）。
+func TestSubscriber_Subscribe_PreCanceledCtx(t *testing.T) {
+	called := make(chan struct{}, 1)
+	stub := &stubNamingClient{
+		subscribeFunc: func(_ *vo.SubscribeParam) error {
+			called <- struct{}{}
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.Subscribe(ctx, "svc-250", func(_ []registry.Instance) {})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Subscribe with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case <-called:
+		t.Fatal("SDK Subscribe must not be called when ctx already canceled")
+	default:
+	}
+}
+
+// TestSubscriber_Subscribe_CancelDuringSDKCall #250 核心场景：Nacos 不可达/
+// gRPC 建流卡住时，调用方的超时预算必须生效——ctx 取消后 Subscribe 立即
+// 返回 context.Canceled，而不是随 SDK 无限挂起。
+func TestSubscriber_Subscribe_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubNamingClient{
+		subscribeFunc: func(_ *vo.SubscribeParam) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Subscribe(ctx, "svc-250", func(_ []registry.Instance) {}) }()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Subscribe after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe blocked on SDK call after ctx cancel — shutdown budget not enforced")
+	}
+	close(release)
+}
+
+// TestSubscriber_Unsubscribe_PreCanceledCtx 预取消 ctx 快速失败且不触 SDK。
+func TestSubscriber_Unsubscribe_PreCanceledCtx(t *testing.T) {
+	called := make(chan struct{}, 1)
+	stub := &stubNamingClient{
+		unsubscribeFunc: func(_ *vo.SubscribeParam) error {
+			called <- struct{}{}
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.Unsubscribe(ctx, "svc-250")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Unsubscribe with pre-canceled ctx: err = %v, want context.Canceled", err)
+	}
+	select {
+	case <-called:
+		t.Fatal("SDK Unsubscribe must not be called when ctx already canceled")
+	default:
+	}
+}
+
+// TestSubscriber_Unsubscribe_CancelDuringSDKCall #250 关停热路径：nns/client
+// 以 closeCtx（5s 预算）调 Unsubscribe，Nacos 不可达时必须在预算内返回。
+func TestSubscriber_Unsubscribe_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubNamingClient{
+		unsubscribeFunc: func(_ *vo.SubscribeParam) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	}
+	s, _ := NewSubscriber(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Unsubscribe(ctx, "svc-250") }()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Unsubscribe after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Unsubscribe blocked on SDK call after ctx cancel — shutdown budget not enforced")
+	}
+	close(release)
+}
+
+// TestConfigStore_ListenConfig_CancelDuringSDKCall #250：首订阅同步触发
+// hooks.Listen（含网络首拉），ctx 取消必须让 ListenConfig 在预算内返回；
+// godoc 此前称「注册本身是本地登记」，与实现不符。
+func TestConfigStore_ListenConfig_CancelDuringSDKCall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	stub := &stubConfigClient{
+		listenConfigFunc: func(_ vo.ConfigParam) error {
+			close(entered)
+			<-release // 模拟网络首拉挂住
+			return nil
+		},
+	}
+	cs, _ := NewConfigStore(stub)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- cs.ListenConfig(ctx, "k250", "G", func(string) {}) }()
+	<-entered
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ListenConfig after cancel: err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ListenConfig blocked on SDK ListenConfig — ctx budget not enforced (#250)")
+	}
+	close(release)
 }

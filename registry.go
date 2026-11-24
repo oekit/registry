@@ -2,18 +2,34 @@ package registry
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"maps"
 	"net"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/oekit/pkg/errors"
 )
 
 // ErrNoInstances 表示服务发现未找到任何实例。
 var ErrNoInstances = errors.New("registry: no instances found")
+
+// 默认值常量单源收口（#214）：此前 "DEFAULT_GROUP" 字面量散落 nacosimpl
+// 三个构造器与 nacos.Bootstrap.GroupOrDefault（nns 仓另有两处），默认权重
+// 10 散落 Apply 与 Nacos Register 的钳制——彼此靠注释互指对齐，改一处漏
+// 一处的漂移风险长期存在。空分组曾两度静默失效：#51（ListenConfig 对空
+// Group 直接报错且被门面吞掉，热更从未注册）、#209（同类问题在 nns 侧
+// 复现）——默认值必须与 SDK 调用点同源，不靠文字对齐。
+const (
+	// DefaultGroup 是注册中心的默认分组名（Nacos 的 "DEFAULT_GROUP"）。
+	// Nacos 实现与配置源对空 Group 的回填一律引用本常量。
+	DefaultGroup = "DEFAULT_GROUP"
+
+	// DefaultInstanceWeight 是实例权重的默认值。
+	// [Apply] 的 RegisterOption 默认值与各实现对 Weight<=0 的钳制同源。
+	DefaultInstanceWeight float64 = 10
+)
 
 // Instance 表示注册中心中的一个服务实例，与具体 provider 无关。
 type Instance struct {
@@ -74,7 +90,7 @@ type Subscriber interface {
 // 各 provider 实现会将这些字段映射到自身 SDK 的参数。
 // 如果某个字段在目标 provider 中不存在，实现应安全地忽略它。
 type RegisterOption struct {
-	// Weight 是实例权重，默认 10。
+	// Weight 是实例权重，默认 [DefaultInstanceWeight]。
 	Weight float64
 	// Metadata 是实例元数据。
 	Metadata map[string]string
@@ -94,7 +110,7 @@ type RegisterOptionFunc func(*RegisterOption)
 //	opt := Apply(registry.WithWeight(20), registry.WithMetadata(meta))
 func Apply(opts ...RegisterOptionFunc) *RegisterOption {
 	o := &RegisterOption{
-		Weight: 10,
+		Weight: DefaultInstanceWeight,
 	}
 	for _, fn := range opts {
 		if fn != nil {
@@ -138,9 +154,16 @@ func WithGroup(group string) RegisterOptionFunc {
 // name 是服务名称，addr 是注册地址（如 *net.TCPAddr），
 // weight 是实例权重（<=0 时使用 defaultWeight），tags 是元数据。
 // defaultWeight 用于 weight<=0 的回退值。
+//
+// 权重兜底链三级恒正（#230）：weight<=0 → defaultWeight，defaultWeight 也
+// 非法（<=0）时兜底 [DefaultInstanceWeight]——与读侧 sdbridge.WeightOrDefault
+// 同口径（sdbridge 反向依赖本包，import 成环，此处同口径内联而非委托）。
+// 此前第二级之后无兜底，defaultWeight 非法时会把 Weight<=0 的实例写出
+// SPI，只有 Nacos 路径靠 nacosimpl 注册时的手写钳制救下，registrymocks/
+// 未来 etcd 实现无此保证——防线不能靠副本互救。
 func InfoFrom(name string, addr net.Addr, weight, defaultWeight int, tags map[string]string) (Instance, error) {
 	if name == "" {
-		return Instance{}, fmt.Errorf("registry: service name is empty")
+		return Instance{}, errors.New("registry: service name is empty")
 	}
 	ip, port, err := ParseAddr(addr)
 	if err != nil {
@@ -149,6 +172,9 @@ func InfoFrom(name string, addr net.Addr, weight, defaultWeight int, tags map[st
 	w := weight
 	if w <= 0 {
 		w = defaultWeight
+	}
+	if w <= 0 {
+		w = int(DefaultInstanceWeight)
 	}
 	return Instance{
 		Service:  name,

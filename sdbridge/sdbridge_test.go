@@ -158,6 +158,18 @@ func TestToInstance(t *testing.T) {
 		}
 	})
 
+	// #230：weight 与 defaultWeight 双双非法时兜底全局默认，产出恒正——
+	// 与 WeightOrDefault 同口径，defaultWeight 非法不再把 Weight<=0 写出 SPI。
+	t.Run("invalid weight and default fall to global default", func(t *testing.T) {
+		inst, err := ToInstance("svc", addr, 0, 0, nil)
+		if err != nil {
+			t.Fatalf("ToInstance() error = %v", err)
+		}
+		if inst.Weight != registry.DefaultInstanceWeight {
+			t.Errorf("Weight = %v, want %v", inst.Weight, registry.DefaultInstanceWeight)
+		}
+	})
+
 	t.Run("empty name error", func(t *testing.T) {
 		if _, err := ToInstance("", addr, 10, 10, nil); err == nil {
 			t.Error("ToInstance(empty name) error = nil, want error")

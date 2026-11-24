@@ -2,11 +2,12 @@ package nacos
 
 import (
 	"context"
-	"fmt"
 	"maps"
 
 	"github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
+	"github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -52,7 +53,7 @@ func toInstances(serviceName string, src []model.Instance) []registry.Instance {
 
 // wrapErr 包装错误并附带 Nacos 上下文信息。
 func wrapErr(op, service string, err error) error {
-	return fmt.Errorf("registry/nacos: %s [%s]: %w", op, service, err)
+	return errors.Wrapf(err, "registry/nacos: %s [%s]", op, service)
 }
 
 // invokeWithCtx 以 ctx 感知方式执行一次无 ctx 入参的 SDK 调用（#65）。
@@ -71,7 +72,14 @@ func wrapErr(op, service string, err error) error {
 //     也不让 select 悬挂）。
 //
 // channel 带缓冲（容量 1）：ctx 先返回时后台调用仍能完成发送，goroutine 不泄漏。
+//
+// nil ctx 按 Background 处理（core#159 全仓口径）：Discoverer/Registrar/
+// ConfigStore 的 SPI 入口都经本函数漏斗，nil 进下方 ctx.Err()/ctx.Done()
+// 直接 nil 解引用 panic——入口一处兜底即覆盖全部 SPI 入口（registry#240，
+// #231 panic 收编之外的另一半；invokeWithCtxErr 经委托同享）。
 func invokeWithCtx[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	// 口径单源：pkg/contextx.OrBackground（registry#240）。
+	ctx = contextx.OrBackground(ctx)
 	var zero T
 	if err := ctx.Err(); err != nil {
 		return zero, err
@@ -85,7 +93,11 @@ func invokeWithCtx[T any](ctx context.Context, fn func() (T, error)) (T, error) 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				ch <- result{zero, fmt.Errorf("nacos sdk call panicked: %v", r)}
+				// panic 收编走 pkg/errors.Recovered 单源（core#136 口径）：
+				// panic 值为 error 时身份经 Unwrap 透传（errors.Is/As 可达），
+				// 此前 Newf %v 拍平会丢身份；「nacos sdk call panicked」
+				// 语义前缀经 Wrap 保留。
+				ch <- result{zero, errors.Wrap(errors.Recovered(r), "nacos sdk call panicked")}
 			}
 		}()
 		v, err := fn()

@@ -7,6 +7,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/clients/config_client"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/oekit/logx"
+	"github.com/oekit/pkg/contextx"
 	"github.com/oekit/registry"
 	"github.com/oekit/registry/configbridge"
 )
@@ -101,17 +102,26 @@ func (s *ConfigStore) GetConfig(ctx context.Context, dataID, group string) (stri
 // 本封装与同 client 的其他封装经 [configbridge] 共享表，每个订阅者独立收到
 // 推送；派发串行（#127）与 panic 隔离（#96/#125）由桥统一承担。
 //
-// ctx 语义（#143）：注册本身是本地登记，仅做进入前 ctx.Err() 预检
-// （ctx 已取消/超时直接失败，不发起注册）；**onChange 不受 ctx 管理**——
+// ctx 语义（#143/#250）：订阅登记并非纯本地操作——**首订阅者**会在
+// [configbridge.Bridge.Subscribe] 内同步触发 hooks.Listen → SDK
+// ListenConfig（含网络首拉）。因此整段登记走 [invokeWithCtx] 漏斗（与
+// GetConfig 同口径）：ctx 已取消/超时快速失败，SDK 调用若已开始会在后台
+// 自行完成（结果丢弃；监听是否真挂上以 SDK 侧为准，可用
+// [ConfigStore.StopListenConfig] 收尾）。**onChange 不受 ctx 管理**——
 // 监听挂上后派发链持续投递，ctx 取消不会停止监听，需要停监听走
 // [ConfigStore.StopListenConfig]。
+//
+// 修复前只做进入前 ctx.Err() 预检、随后直接同步调 bridge.Subscribe，godoc
+// 却称「注册本身是本地登记」：Nacos 不可达/首拉阻塞时调用方超时预算无效。
 func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, onChange func(data string)) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	id, err := s.bridge.Subscribe(dataID, group, func(_, _, _, data string) {
-		log.Info("config changed", "dataId", dataID, "group", group)
-		onChange(data)
+	// nil ctx 按 Background 处理（registry#240）：本方法不再自建预检，
+	// 统一由 invokeWithCtx 漏斗兜底（预取消快速失败语义不变）。
+	ctx = contextx.OrBackground(ctx)
+	id, err := invokeWithCtx(ctx, func() (configbridge.Handle, error) {
+		return s.bridge.Subscribe(dataID, group, func(_, _, _, data string) {
+			log.Info("config changed", "dataId", dataID, "group", group)
+			onChange(data)
+		})
 	})
 	if err != nil {
 		return wrapErr("listen config", dataID+"/"+group, err)
@@ -136,6 +146,9 @@ func (s *ConfigStore) ListenConfig(ctx context.Context, dataID, group string, on
 func (s *ConfigStore) StopListenConfig(ctx context.Context, dataID, group string) error {
 	// ctx 预检（#143 口径）：即使本封装无订阅（no-op 路径），pre-canceled
 	// 也保持快速失败——与 ListenConfig 的入口预检对称。
+	// nil ctx 按 Background 处理（registry#240）：预检不在 invokeWithCtx
+	// 漏斗内，nil 进 ctx.Err() 同样 nil 解引用 panic。
+	ctx = contextx.OrBackground(ctx)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
